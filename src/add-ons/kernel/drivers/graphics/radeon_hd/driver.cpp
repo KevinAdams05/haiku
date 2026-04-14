@@ -169,10 +169,17 @@ const struct supported_device {
 	// Codename: Evergreen
 	// Process: 40 nm
 	//  Cedar
-	{0x68e1, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD 5430"},
-	{0x68f9, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD 5450"},
 	{0x68e0, 4, 0, RADEON_CEDAR, CHIP_IGP, "Radeon HD 5470"},
+	{0x68e1, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD 5430"},
 	{0x68e4, 4, 0, RADEON_CEDAR, CHIP_MOBILE, "Radeon HD 6370"},
+	{0x68e5, 4, 0, RADEON_CEDAR, CHIP_MOBILE, "Radeon HD 6300M"},
+	{0x68e8, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD Cedar"},
+	{0x68e9, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD Cedar"},
+	{0x68f1, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD 5450"},
+	{0x68f2, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD Cedar"},
+	{0x68f8, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD 7300"},
+	{0x68f9, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD 5450"},
+	{0x68fe, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD Cedar"},
 	//  Redwood
 	{0x68da, 4, 0, RADEON_REDWOOD, CHIP_STD, "Radeon HD 5500"},
 	{0x68d9, 4, 0, RADEON_REDWOOD, CHIP_STD, "Radeon HD 5570"},
@@ -242,7 +249,7 @@ const struct supported_device {
 	{0x6770, 5, 0, RADEON_CAICOS, CHIP_STD, "Radeon HD 6400"},
 	{0x6778, 5, 0, RADEON_CAICOS, CHIP_STD, "Radeon HD 7470/8470"},
 	{0x6779, 5, 0, RADEON_CAICOS, CHIP_STD, "Radeon HD 6450/7450/8450"},
-	{0x68fa, 5, 0, RADEON_CAICOS, CHIP_STD, "Radeon HD 7350"},
+	{0x68fa, 4, 0, RADEON_CEDAR, CHIP_STD, "Radeon HD 7350/8350"},
 	{0x677b, 5, 0, RADEON_CAICOS, CHIP_STD, "Radeon HD 7400"},
 	{0x6772, 5, 0, RADEON_CAICOS, CHIP_APU, "Radeon HD 7400A"},
 	{0x6771, 5, 0, RADEON_CAICOS, CHIP_STD, "Radeon HD 8490"},

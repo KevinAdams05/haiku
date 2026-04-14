@@ -465,18 +465,15 @@ display_get_encoder_mode(uint32 connectorIndex)
 	switch (gConnector[connectorIndex]->type) {
 		case VIDEO_CONNECTOR_DVII:
 		case VIDEO_CONNECTOR_HDMIB: /* HDMI-B is DL-DVI; analog works fine */
-			// TODO: if audio detected on edid and DCE4, ATOM_ENCODER_MODE_DVI
-			//        if audio detected on edid not DCE4, ATOM_ENCODER_MODE_HDMI
 			if (edidDigital)
 				return ATOM_ENCODER_MODE_DVI;
 			else
 				return ATOM_ENCODER_MODE_CRT;
 			break;
-		case VIDEO_CONNECTOR_DVID:
 		case VIDEO_CONNECTOR_HDMIA:
+			return ATOM_ENCODER_MODE_HDMI;
+		case VIDEO_CONNECTOR_DVID:
 		default:
-			// TODO: if audio detected on edid and DCE4, ATOM_ENCODER_MODE_DVI
-			//        if audio detected on edid not DCE4, ATOM_ENCODER_MODE_HDMI
 			return ATOM_ENCODER_MODE_DVI;
 		case VIDEO_CONNECTOR_LVDS:
 			return ATOM_ENCODER_MODE_LVDS;

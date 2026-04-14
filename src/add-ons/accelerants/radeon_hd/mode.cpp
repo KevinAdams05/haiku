@@ -335,6 +335,46 @@ is_mode_supported(display_mode* mode)
 	// TODO: is_mode_supported on *which* display?
 	uint32 crtid = 0;
 
+	// Validate pixel clock against connector type limits.
+	// HDMI single-link TMDS maxes out at 165 MHz (pre-DCE6) or
+	// 340 MHz (DCE6+ with HDMI 1.3+). DVI single-link has the same
+	// 165 MHz limit; dual-link DVI supports up to 330 MHz.
+	// Without this check, the driver may attempt pixel clocks the
+	// hardware physically cannot produce (e.g. 533 MHz for 4K@60Hz
+	// on a Cedar GPU over HDMI), causing a garbled display.
+	uint32 connectorIndex = gDisplay[crtid]->connectorIndex;
+	uint32 connectorType = gConnector[connectorIndex]->type;
+	radeon_shared_info &info = *gInfo->shared_info;
+
+	if (mode->timing.pixel_clock > 165000) {
+		switch (connectorType) {
+			case VIDEO_CONNECTOR_HDMIA:
+				if (info.chipsetID >= RADEON_CAPEVERDE) {
+					// DCE6+: HDMI 1.3+ supports up to 340 MHz single-link
+					if (mode->timing.pixel_clock > 340000)
+						sane = false;
+				} else {
+					// Pre-DCE6: HDMI limited to 165 MHz single-link TMDS
+					sane = false;
+				}
+				break;
+			case VIDEO_CONNECTOR_DVID:
+			case VIDEO_CONNECTOR_DVII:
+				// Single-link DVI: 165 MHz max. Only dual-link DVI
+				// connectors can exceed this, and Haiku doesn't currently
+				// distinguish single vs dual-link in connector enumeration.
+				sane = false;
+				break;
+			case VIDEO_CONNECTOR_HDMIB:
+				// HDMI-B is electrically dual-link DVI, up to 340 MHz
+				if (mode->timing.pixel_clock > 340000)
+					sane = false;
+				break;
+			default:
+				break;
+		}
+	}
+
 	// if we have edid info, check frequency adginst crt reported valid ranges
 	if (gInfo->shared_info->has_edid
 		&& gDisplay[crtid]->foundRanges) {
@@ -357,8 +397,6 @@ is_mode_supported(display_mode* mode)
 		}
 	}
 
-	#if 0
-	// Lots of spam, but good for understanding what modelines are in use
 	TRACE("MODE: %d ; %d %d %d %d ; %d %d %d %d is %s\n",
 		mode->timing.pixel_clock, mode->timing.h_display,
 		mode->timing.h_sync_start, mode->timing.h_sync_end,
@@ -366,7 +404,6 @@ is_mode_supported(display_mode* mode)
 		mode->timing.v_sync_start, mode->timing.v_sync_end,
 		mode->timing.v_total,
 		sane ? "OK." : "BAD, out of range!");
-	#endif
 
 	return sane;
 }
