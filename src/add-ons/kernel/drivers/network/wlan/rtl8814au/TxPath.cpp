@@ -286,7 +286,7 @@ uint32
 RTL8814AUTxPath::_QueueToPipeIndex(TxQueueSelect queue)
 {
 	uint32 index = (uint32)queue;
-	if (index >= kBulkOutPipeCount)
+	if (index >= kBulkOutEndpointCount)
 		return 1;	// Default to best-effort
 	return index;
 }
