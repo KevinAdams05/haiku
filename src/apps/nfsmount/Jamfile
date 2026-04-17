@@ -1,0 +1,16 @@
+SubDir HAIKU_TOP src apps nfsmount ;
+
+UsePrivateHeaders interface ;
+
+Application NFSMount :
+	App.cpp
+	Constants.cpp
+	EditShareWindow.cpp
+	MainWindow.cpp
+	Settings.cpp
+	ShareItem.cpp
+	ShareManager.cpp
+	: be libcolumnlistview.a tracker localestub [ TargetLibsupc++ ]
+	: NFSMount.rdef
+;
+
