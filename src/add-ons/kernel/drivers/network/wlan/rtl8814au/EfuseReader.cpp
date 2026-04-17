@@ -7,7 +7,7 @@
  * Physical EFUSE is 1024 bytes stored in a compressed format. This module
  * reads the raw data and decodes it into a 512-byte logical map. The map
  * contains:
- *   - MAC address (offset 0x000, 6 bytes)
+ *   - MAC address (offset 0x107, 6 bytes — USB variant)
  *   - Antenna TX/RX path config (offset 0x00E)
  *   - RFE type (offset 0x010) — determines PA/LNA wiring
  *   - TX power calibration tables (2.4 GHz and 5 GHz)
@@ -225,8 +225,9 @@ RTL8814AUEfuseReader::_DecodeMap()
 				return status;
 			physAddr++;
 
-			mapOffset = (uint16)(((header & 0xF0) >> 4)
-				| ((header2 & 0xF0) >> 0));
+			// Offset = header[7:5] in bits [2:0], header2[7:4] in bits [6:3]
+			mapOffset = (uint16)(((header & 0xE0) >> 5)
+				| ((header2 & 0xF0) >> 1));
 			mapOffset *= 8;
 			wordEnable = header2 & 0x0F;
 		} else {

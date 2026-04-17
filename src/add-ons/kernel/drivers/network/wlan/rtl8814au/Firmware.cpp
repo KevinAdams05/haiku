@@ -6,21 +6,22 @@
  *
  * The loading sequence for the Lexra 3081 MCU:
  *   1. Read firmware binary from filesystem
- *   2. Validate header (signature 0x8814, size ≤ 96 KB)
- *   3. Enable firmware download mode
- *   4. Halt the MCU
- *   5. DMA the DMEM section to chip data memory
- *   6. DMA the IRAM section to chip instruction memory
- *   7. Resume the MCU
- *   8. Disable download mode
- *   9. Poll until firmware signals CPU_DL_READY
+ *   2. Validate the 32-byte header (signature 0x8814)
+ *   3. Enable firmware download mode + reset MCU
+ *   4. Write the payload in 4 KB pages via register writes to 0x1000
+ *   5. Disable download mode
+ *   6. Poll until MCU reports checksum OK, then signal ready, then
+ *      wait for WINTINI_RDY (firmware init complete)
  *
- * The internal DMA engine (DDMA) is used for the actual data transfer.
- * This is fundamentally different from older Realtek chips (RTL8192/8812)
- * that use 8051-style page writes through the firmware download register.
+ * The page-based write mechanism:
+ *   - Select a page (0–7) by writing to bits [18:16] of REG_MCUFWDL
+ *   - Write up to 4 KB of data to addresses 0x1000–0x1FFF
+ *   - Advance to the next page and repeat
  *
- * Reference: rtl8814a_hal_init.c:FirmwareDownload8814A() in the
- * ulli-kroll/rtl8814au driver.
+ * Reference: rtl8814a_hal_init.c — FirmwareDownload8814A(),
+ *            _FWDownloadEnable_8814A(), _WriteFW_8814A(),
+ *            _PageWrite_8814A(), _FWFreeToGo8814A()
+ *            in ulli-kroll/rtl8814au.
  */
 
 #include "Firmware.h"
@@ -32,6 +33,7 @@
 
 #include <ByteOrder.h>
 #include <KernelExport.h>
+#include <OS.h>
 
 #include "RegisterIO.h"
 
@@ -43,10 +45,8 @@ RTL8814AUFirmware::RTL8814AUFirmware(RTL8814AURegisterIO* registerIO)
 	fDataSize(0),
 	fLoaded(false),
 	fVersion(0),
-	fDmemOffset(0),
-	fDmemSize(0),
-	fIramOffset(0),
-	fIramSize(0)
+	fPayloadOffset(0),
+	fPayloadSize(0)
 {
 }
 
@@ -89,50 +89,28 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	}
 
 	dprintf(RTL8814AU_DRIVER_NAME ": firmware version %u, "
-		"DMEM %"  B_PRIu32 " bytes, IRAM %" B_PRIu32 " bytes\n",
-		fVersion, fDmemSize, fIramSize);
+		"payload %" B_PRIu32 " bytes\n", fVersion, fPayloadSize);
 
-	// Step 3: Enable download mode
+	// Step 3: Enable download mode (sets MCUFWDL_EN + resets MCU)
 	status = _EnableDownloadMode();
 	if (status != B_OK)
 		goto cleanup;
 
-	// Step 4: Halt the MCU so we can safely write to its memory
-	status = _HaltMCU();
+	// Step 4: Write the firmware payload via page-based register writes
+	dprintf(RTL8814AU_DRIVER_NAME ": writing firmware "
+		"(%" B_PRIu32 " bytes, %" B_PRIu32 " pages)\n",
+		fPayloadSize, (fPayloadSize + kFwPageSize - 1) / kFwPageSize);
+
+	status = _PageWriteFirmware(fData + fPayloadOffset, fPayloadSize);
 	if (status != B_OK)
 		goto cleanup;
 
-	// Step 5: DMA the DMEM section to chip data memory
-	if (fDmemSize > 0) {
-		dprintf(RTL8814AU_DRIVER_NAME ": transferring DMEM "
-			"(%" B_PRIu32 " bytes)\n", fDmemSize);
-		status = _DmaTransferSection(fData + fDmemOffset, fDmemSize,
-			kFirmwareDmemStartAddr);
-		if (status != B_OK)
-			goto cleanup;
-	}
-
-	// Step 6: DMA the IRAM section to chip instruction memory
-	if (fIramSize > 0) {
-		dprintf(RTL8814AU_DRIVER_NAME ": transferring IRAM "
-			"(%" B_PRIu32 " bytes)\n", fIramSize);
-		status = _DmaTransferSection(fData + fIramOffset, fIramSize,
-			kFirmwareImemStartAddr);
-		if (status != B_OK)
-			goto cleanup;
-	}
-
-	// Step 7: Resume the MCU
-	status = _ResumeMCU();
-	if (status != B_OK)
-		goto cleanup;
-
-	// Step 8: Disable download mode
+	// Step 5: Disable download mode
 	status = _DisableDownloadMode();
 	if (status != B_OK)
 		goto cleanup;
 
-	// Step 9: Poll until firmware signals ready
+	// Step 6: Poll until firmware signals ready
 	status = _PollForReady();
 	if (status != B_OK)
 		goto cleanup;
@@ -148,8 +126,9 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	return B_OK;
 
 cleanup:
-	dprintf(RTL8814AU_DRIVER_NAME ": firmware load failed at step: %s\n",
+	dprintf(RTL8814AU_DRIVER_NAME ": firmware load failed: %s\n",
 		strerror(status));
+	_DisableDownloadMode();
 	delete[] fData;
 	fData = NULL;
 	fDataSize = 0;
@@ -207,14 +186,13 @@ RTL8814AUFirmware::_ReadFile(const char* path)
 }
 
 
-/*! Validate the firmware header at the start of fData. Parses the section
-    offsets and sizes for DMEM and IRAM.
-*/
+/*! Validate the 32-byte firmware header and compute payload offset/size. */
 status_t
 RTL8814AUFirmware::_ValidateHeader()
 {
-	if (fDataSize < sizeof(RTL8814AUFirmwareHeader)) {
-		dprintf(RTL8814AU_DRIVER_NAME ": firmware too small for header\n");
+	if (fDataSize < kFwHeaderSize) {
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware too small for header "
+			"(%" B_PRIu32 " < %u)\n", fDataSize, kFwHeaderSize);
 		return B_BAD_DATA;
 	}
 
@@ -231,41 +209,12 @@ RTL8814AUFirmware::_ValidateHeader()
 
 	fVersion = B_LENDIAN_TO_HOST_INT16(header->version);
 
-	// Parse section sizes from the header
-	fIramSize = B_LENDIAN_TO_HOST_INT16(header->ramCodeSize);
-	fDmemSize = B_LENDIAN_TO_HOST_INT32(header->dmemSize);
+	// Everything after the 32-byte header is the firmware payload
+	fPayloadOffset = kFwHeaderSize;
+	fPayloadSize = fDataSize - kFwHeaderSize;
 
-	// Sections follow immediately after the header
-	uint32 headerSize = sizeof(RTL8814AUFirmwareHeader);
-	fDmemOffset = headerSize;
-	fIramOffset = headerSize + fDmemSize;
-
-	// Bounds check
-	if (fDmemOffset + fDmemSize > fDataSize) {
-		dprintf(RTL8814AU_DRIVER_NAME ": DMEM section extends beyond "
-			"file (offset %" B_PRIu32 ", size %" B_PRIu32
-			", file %" B_PRIu32 ")\n",
-			fDmemOffset, fDmemSize, fDataSize);
-		return B_BAD_DATA;
-	}
-
-	if (fIramOffset + fIramSize > fDataSize) {
-		dprintf(RTL8814AU_DRIVER_NAME ": IRAM section extends beyond "
-			"file (offset %" B_PRIu32 ", size %" B_PRIu32
-			", file %" B_PRIu32 ")\n",
-			fIramOffset, fIramSize, fDataSize);
-		return B_BAD_DATA;
-	}
-
-	if (fDmemSize > kFirmwareDmemMaxSize) {
-		dprintf(RTL8814AU_DRIVER_NAME ": DMEM too large: %" B_PRIu32
-			" (max %" B_PRIu32 ")\n", fDmemSize, kFirmwareDmemMaxSize);
-		return B_BAD_DATA;
-	}
-
-	if (fIramSize > kFirmwareIramMaxSize) {
-		dprintf(RTL8814AU_DRIVER_NAME ": IRAM too large: %" B_PRIu32
-			" (max %" B_PRIu32 ")\n", fIramSize, kFirmwareIramMaxSize);
+	if (fPayloadSize == 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware has no payload\n");
 		return B_BAD_DATA;
 	}
 
@@ -273,115 +222,100 @@ RTL8814AUFirmware::_ValidateHeader()
 }
 
 
-/*! Enable firmware download mode by setting the appropriate bits in
-    the firmware control register.
+/*! Enable firmware download mode: set the download enable bit and
+    reset the MCU so we can safely write to its memory.
+    Matches _FWDownloadEnable_8814A(enable=true) in the reference driver.
 */
 status_t
 RTL8814AUFirmware::_EnableDownloadMode()
 {
+	// Set firmware download enable (bit 0 of REG_MCUFWDL)
 	uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
-	ctrl |= kMcuFwDlEn | kMcuFwDlChksumRpt | kMcuFwDlDisableSim;
+	ctrl |= kMcuFwDlEn;
+	status_t status = fRegisterIO->Write32(kRegMcuFwDl, ctrl);
+	if (status != B_OK)
+		return status;
+
+	// Reset MCU (clear bit 19 — MCU running flag)
+	ctrl = fRegisterIO->Read32(kRegMcuFwDl);
+	ctrl &= ~kMcuRst8051;
 	return fRegisterIO->Write32(kRegMcuFwDl, ctrl);
 }
 
 
-/*! Disable firmware download mode after transfer is complete. */
+/*! Disable firmware download mode after transfer is complete.
+    Matches _FWDownloadEnable_8814A(enable=false) in the reference driver.
+*/
 status_t
 RTL8814AUFirmware::_DisableDownloadMode()
 {
 	uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
-	ctrl &= ~(kMcuFwDlEn | kMcuFwDlChksumRpt | kMcuFwDlDisableSim);
+	ctrl &= ~kMcuFwDlEn;
 	return fRegisterIO->Write32(kRegMcuFwDl, ctrl);
 }
 
 
-/*! Halt the Lexra 3081 MCU by clearing the CPU enable bit. This must
-    be done before writing to DMEM/IRAM to avoid corrupting the running
-    firmware.
+/*! Write the firmware payload to chip memory using page-based register
+    writes. The payload is split into 4 KB pages; for each page we set
+    the page number in REG_MCUFWDL and write data to 0x1000.
+
+    Matches _WriteFW_8814A() in the reference driver.
 */
 status_t
-RTL8814AUFirmware::_HaltMCU()
+RTL8814AUFirmware::_PageWriteFirmware(const uint8* data, uint32 size)
 {
-	// The CPU enable bit is bit 2 in the upper byte of kRegSysFuncEn
-	// (i.e., bit 12 of the 16-bit register, which is kSysFuncEnCpuEn).
-	uint16 funcEn = fRegisterIO->Read16(kRegSysFuncEn);
-	funcEn &= ~kSysFuncEnCpuEn;
-	return fRegisterIO->Write16(kRegSysFuncEn, funcEn);
+	uint32 pageCount = size / kFwPageSize;
+	uint32 remainSize = size % kFwPageSize;
+
+	for (uint32 page = 0; page < pageCount; page++) {
+		status_t status = _WritePage(page,
+			data + page * kFwPageSize, kFwPageSize);
+		if (status != B_OK)
+			return status;
+	}
+
+	if (remainSize > 0) {
+		status_t status = _WritePage(pageCount,
+			data + pageCount * kFwPageSize, remainSize);
+		if (status != B_OK)
+			return status;
+	}
+
+	return B_OK;
 }
 
 
-/*! Resume the Lexra 3081 MCU by setting the CPU enable bit. The firmware
-    begins executing from the start of IRAM.
+/*! Write a single 4 KB page of firmware data. Sets the page number in
+    REG_MCUFWDL, then writes data word-by-word to kFwStartAddress (0x1000).
+
+    Matches _PageWrite_8814A() + _BlockWrite_8814A() in the reference driver.
 */
 status_t
-RTL8814AUFirmware::_ResumeMCU()
+RTL8814AUFirmware::_WritePage(uint32 page, const uint8* data, uint32 size)
 {
-	uint16 funcEn = fRegisterIO->Read16(kRegSysFuncEn);
-	funcEn |= kSysFuncEnCpuEn;
-	return fRegisterIO->Write16(kRegSysFuncEn, funcEn);
-}
+	// Select page number in bits [18:16] of REG_MCUFWDL
+	uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
+	ctrl = (ctrl & ~kMcuFwDlPageMask)
+		| ((page & 0x07) << kMcuFwDlPageShift);
+	status_t status = fRegisterIO->Write32(kRegMcuFwDl, ctrl);
+	if (status != B_OK)
+		return status;
 
-
-/*! Transfer a firmware section to the chip using the internal DMA engine
-    (DDMA). The data is written to a staging buffer in the chip's memory
-    space, then an internal DMA operation copies it to the final destination.
-
-    \param data         Pointer to section data (host memory)
-    \param size         Section size in bytes
-    \param destAddress  Destination address in chip address space
-    \return B_OK on success, B_TIMED_OUT if DMA doesn't complete.
-*/
-status_t
-RTL8814AUFirmware::_DmaTransferSection(const uint8* data, uint32 size,
-	uint32 destAddress)
-{
-	// The internal DMA engine transfers data in chunks. Each chunk
-	// involves:
-	//   1. Write the data to the chip's staging buffer via register writes
-	//   2. Configure DDMA source, destination, and size
-	//   3. Trigger DMA and wait for completion
-
-	static const uint32 kChunkSize = 4096;
-
-	for (uint32 offset = 0; offset < size; offset += kChunkSize) {
-		uint32 chunkLen = size - offset;
-		if (chunkLen > kChunkSize)
-			chunkLen = kChunkSize;
-
-		// Write chunk data to staging area via sequential register writes.
-		// The staging buffer at kFirmwareDmaBufferAddr is accessible
-		// through the indirect memory interface.
-		for (uint32 i = 0; i < chunkLen; i += 4) {
-			uint32 word = 0;
-			uint32 remaining = chunkLen - i;
-			if (remaining >= 4) {
-				memcpy(&word, data + offset + i, 4);
-			} else {
-				// Partial last word — pad with zeros
-				memcpy(&word, data + offset + i, remaining);
-			}
-			status_t status = fRegisterIO->Write32(
-				kFirmwareDmaBufferAddr + i, word);
-			if (status != B_OK)
-				return status;
+	// Write data to kFwStartAddress in 4-byte words
+	for (uint32 i = 0; i < size; i += 4) {
+		uint32 word = 0;
+		uint32 remaining = size - i;
+		if (remaining >= 4) {
+			memcpy(&word, data + i, 4);
+		} else {
+			// Partial last word — zero-pad
+			memcpy(&word, data + i, remaining);
 		}
-
-		// Configure the internal DMA: source = staging buffer,
-		// destination = target memory, length = chunk size
-		fRegisterIO->Write32(kRegDdmaCh0SA, kFirmwareDmaBufferAddr);
-		fRegisterIO->Write32(kRegDdmaCh0DA, destAddress + offset);
-
-		// Start DMA transfer with checksum enabled
-		uint32 dmaCtrl = chunkLen | kDdmaChOwn | kDdmaChksmEn;
-		fRegisterIO->Write32(kRegDdmaCh0Ctrl, dmaCtrl);
-
-		// Poll until DMA completes (OWN bit clears)
-		status_t status = fRegisterIO->PollFor32(kRegDdmaCh0Ctrl,
-			kDdmaChOwn, 0, 1000, 10);
+		status = fRegisterIO->Write32(kFwStartAddress + i, word);
 		if (status != B_OK) {
-			dprintf(RTL8814AU_DRIVER_NAME ": DMA transfer timed out "
-				"at offset %" B_PRIu32 "\n", offset);
-			return B_TIMED_OUT;
+			dprintf(RTL8814AU_DRIVER_NAME ": page write failed at "
+				"page %" B_PRIu32 " offset %" B_PRIu32 "\n", page, i);
+			return status;
 		}
 	}
 
@@ -389,16 +323,57 @@ RTL8814AUFirmware::_DmaTransferSection(const uint8* data, uint32 size,
 }
 
 
-/*! Poll the firmware control register until the MCU signals that it
-    has finished initialization (CPU_DL_READY bit set).
-    Polls up to 100 times with 50 ms between attempts (5 seconds total).
+/*! Poll the firmware control register through three stages:
+    1. Wait for checksum report (MCU has verified the downloaded firmware)
+    2. Set MCUFWDL_RDY and clear WINTINI_RDY to signal MCU to start init
+    3. Wait for WINTINI_RDY (firmware has finished initialization)
+
+    Matches _FWFreeToGo8814A() in the reference driver.
 */
 status_t
 RTL8814AUFirmware::_PollForReady()
 {
-	dprintf(RTL8814AU_DRIVER_NAME ": waiting for firmware ready signal\n");
+	dprintf(RTL8814AU_DRIVER_NAME ": waiting for firmware checksum\n");
 
-	return fRegisterIO->PollFor32(kRegMcuFwDl,
-		kMcuCpuDlReady, kMcuCpuDlReady,
-		kFirmwarePollAttempts, kFirmwarePollDelay);
+	// Stage 1: Wait for checksum report from MCU
+	uint32 attempts = 0;
+	while (attempts < kFirmwarePollAttempts) {
+		uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
+		if (ctrl & kMcuFwDlChksumRpt)
+			break;
+		snooze(kFirmwarePollDelay);
+		attempts++;
+	}
+	if (attempts >= kFirmwarePollAttempts) {
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware checksum timed out\n");
+		return B_TIMED_OUT;
+	}
+
+	dprintf(RTL8814AU_DRIVER_NAME ": firmware checksum OK, "
+		"signaling MCU to start\n");
+
+	// Stage 2: Tell MCU to begin firmware initialization
+	uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
+	ctrl |= kMcuFwDlRdy;
+	ctrl &= ~kMcuWintiniRdy;
+	fRegisterIO->Write32(kRegMcuFwDl, ctrl);
+
+	// Stage 3: Wait for firmware to signal init complete
+	attempts = 0;
+	while (attempts < kFirmwarePollAttempts) {
+		ctrl = fRegisterIO->Read32(kRegMcuFwDl);
+		if (ctrl & kMcuWintiniRdy)
+			break;
+		snooze(kFirmwarePollDelay);
+		attempts++;
+	}
+	if (attempts >= kFirmwarePollAttempts) {
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware init ready timed out "
+			"(reg=0x%08" B_PRIx32 ")\n",
+			fRegisterIO->Read32(kRegMcuFwDl));
+		return B_TIMED_OUT;
+	}
+
+	dprintf(RTL8814AU_DRIVER_NAME ": firmware init complete\n");
+	return B_OK;
 }

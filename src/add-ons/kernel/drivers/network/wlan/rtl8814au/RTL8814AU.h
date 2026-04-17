@@ -64,8 +64,6 @@ static const uint32 kSupportedDeviceCount
 
 static const uint32 kRTL8814AU_ChipID		= 0x8814;
 static const uint32 kMaxFirmwareSize		= 0x18000;	// 96 KB
-static const uint32 kFirmwareDmemMaxSize	= 0x8000;	// 32 KB
-static const uint32 kFirmwareIramMaxSize	= 0x10000;	// 64 KB
 
 // TX buffer: 2048 pages of 128 bytes each = 256 KB total
 static const uint32 kTxPageSize				= 128;
@@ -192,40 +190,36 @@ static const uint16 kRegMultiFuncCtrl		= 0x0068;
 // ---------------------------------------------------------------------------
 // Register addresses — Firmware Control (0x0080 area)
 //
-// The RTL8814AU uses a Lexra 3081 MIPS-derived MCU, not the 8051 found in
-// older chips. Firmware is loaded via the chip's internal DMA engine in two
-// sections: DMEM (data memory) and IRAM (instruction memory).
+// The RTL8814AU uses a Lexra 3081 MIPS-derived MCU. Firmware is loaded via
+// page-based register writes: the host selects a 4 KB page and writes data
+// to 0x1000–0x1FFF, then advances to the next page. After all pages are
+// written, the MCU validates a checksum and signals readiness.
+//
+// Reference: rtl8814a_hal_init.c — FirmwareDownload8814A(),
+//            _FWDownloadEnable_8814A(), _WriteFW_8814A(), _FWFreeToGo8814A()
 // ---------------------------------------------------------------------------
 
 static const uint16 kRegMcuFwDl				= 0x0080;
 
-// kRegMcuFwDl bit definitions
-static const uint32 kMcuFwDlEn				= (1 << 0);
-static const uint32 kMcuFwDlRdy			= (1 << 3);
-static const uint32 kMcuWintiniRdy			= (1 << 6);
-static const uint32 kMcuFwDlChksumRpt		= (1 << 12);
-static const uint32 kMcuFwDlDisableSim		= (1 << 13);
-static const uint32 kMcuCpuDlReady			= (1 << 15);
+// kRegMcuFwDl bit definitions (32-bit register at 0x0080)
+// Byte 0 (0x0080):
+static const uint32 kMcuFwDlEn				= (1 << 0);	// FW download enable
+static const uint32 kMcuFwDlRdy			= (1 << 1);	// Set by host after write
+static const uint32 kMcuFwDlChksumRpt		= (1 << 2);	// Checksum OK from MCU
+static const uint32 kMcuWintiniRdy			= (1 << 6);	// FW init complete
+// Byte 2 (0x0082):
+static const uint32 kMcuFwDlPageShift		= 16;			// Page number in [18:16]
+static const uint32 kMcuFwDlPageMask		= (0x07 << 16);
+static const uint32 kMcuRst8051			= (1 << 19);	// MCU running (clear=reset)
 
-// Internal DMA control registers (for firmware loading)
-static const uint16 kRegDdmaChCtrl			= 0x1208;
-static const uint16 kRegDdmaCh0SA			= 0x1200;
-static const uint16 kRegDdmaCh0DA			= 0x1204;
-static const uint16 kRegDdmaCh0Ctrl			= 0x1208;
-
-// DDMA control bits
-static const uint32 kDdmaChOwn				= (1 << 31);
-static const uint32 kDdmaChksmEn			= (1 << 29);
-static const uint32 kDdmaChRst				= (1 << 15);
-
-// Firmware memory base addresses inside the chip
-static const uint32 kFirmwareImemStartAddr	= 0x00000000;
-static const uint32 kFirmwareDmemStartAddr	= 0x00200000;
-static const uint32 kFirmwareDmaBufferAddr	= 0x10000;	// host-side staging
+// Firmware page-based download constants
+static const uint16 kFwStartAddress			= 0x1000;	// Write target per page
+static const uint32 kFwPageSize				= 4096;		// 4 KB per page
+static const uint32 kFwHeaderSize			= 32;		// RT_8814A_FIRMWARE_HDR
 
 // Firmware polling
-static const uint32 kFirmwarePollAttempts	= 100;
-static const bigtime_t kFirmwarePollDelay	= 50000;	// 50 ms in microseconds
+static const uint32 kFirmwarePollAttempts	= 6000;
+static const bigtime_t kFirmwarePollDelay	= 5;		// 5 µs between polls
 
 
 // ---------------------------------------------------------------------------
