@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 700" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="haltGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef3c7"/>
+      <stop offset="100%" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="resumeGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d1fae5"/>
+      <stop offset="100%" stop-color="#a7f3d0"/>
+    </linearGradient>
+    <linearGradient id="idleGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e0e7ff"/>
+      <stop offset="100%" stop-color="#c7d2fe"/>
+    </linearGradient>
+    <linearGradient id="reconfigGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fce7f3"/>
+      <stop offset="100%" stop-color="#fbcfe8"/>
+    </linearGradient>
+    <filter id="dropShadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00000022"/>
+    </filter>
+    <marker id="arrowDark" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <path d="M0,0 L10,3.5 L0,7" fill="#4a5568"/>
+    </marker>
+    <marker id="arrowAmber" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <path d="M0,0 L10,3.5 L0,7" fill="#d97706"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <path d="M0,0 L10,3.5 L0,7" fill="#059669"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="470" y="35" text-anchor="middle" font-size="20" font-weight="700" fill="#1a202c">Evergreen Memory Controller Halt / Resume Sequence</text>
+  <text x="470" y="55" text-anchor="middle" font-size="12" fill="#718096">evergreen_gpu_mc_halt() &amp; evergreen_gpu_mc_resume() — gpu.cpp</text>
+
+  <!-- ===== HALT PHASE ===== -->
+  <rect x="30" y="75" width="420" height="540" rx="14" fill="url(#haltGrad)" stroke="#d97706" stroke-width="2" filter="url(#dropShadow)"/>
+  <text x="240" y="100" text-anchor="middle" font-size="16" font-weight="700" fill="#92400e">HALT PHASE</text>
+
+  <!-- Step 1: Disable VGA -->
+  <rect x="60" y="118" width="360" height="46" rx="8" fill="white" stroke="#d97706" stroke-width="1.5"/>
+  <circle cx="82" cy="141" r="12" fill="#d97706"/>
+  <text x="82" y="146" text-anchor="middle" font-size="12" font-weight="700" fill="white">1</text>
+  <text x="105" y="136" font-size="11.5" font-weight="600" fill="#1a202c">Save &amp; Disable VGA Render</text>
+  <text x="105" y="153" font-size="10" fill="#718096">VGA_RENDER_CONTROL = 0, save HDP_CONTROL</text>
+
+  <!-- Arrow -->
+  <line x1="240" y1="164" x2="240" y2="180" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrowAmber)"/>
+
+  <!-- Step 2: Blank CRTCs -->
+  <rect x="60" y="184" width="360" height="62" rx="8" fill="white" stroke="#d97706" stroke-width="1.5"/>
+  <circle cx="82" cy="207" r="12" fill="#d97706"/>
+  <text x="82" y="212" text-anchor="middle" font-size="12" font-weight="700" fill="white">2</text>
+  <text x="105" y="202" font-size="11.5" font-weight="600" fill="#1a202c">Blank Active CRTCs (x6)</text>
+  <text x="105" y="218" font-size="10" fill="#718096">Set CRTC_DISP_READ_REQUEST_DISABLE</text>
+  <text x="105" y="234" font-size="10" fill="#718096">Uses EVERGREEN_CRTC_CONTROL + offset per CRTC</text>
+
+  <!-- Arrow -->
+  <line x1="240" y1="246" x2="240" y2="262" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrowAmber)"/>
+
+  <!-- Step 3: Disable Master -->
+  <rect x="60" y="266" width="360" height="62" rx="8" fill="white" stroke="#d97706" stroke-width="1.5"/>
+  <circle cx="82" cy="289" r="12" fill="#d97706"/>
+  <text x="82" y="294" text-anchor="middle" font-size="12" font-weight="700" fill="white">3</text>
+  <text x="105" y="284" font-size="11.5" font-weight="600" fill="#1a202c">Disable CRTC Master Enable</text>
+  <text x="105" y="300" font-size="10" fill="#718096">Clear EVERGREEN_CRTC_MASTER_EN</text>
+  <text x="105" y="316" font-size="10" fill="#718096">Wrapped in UPDATE_LOCK / UNLOCK pair</text>
+
+  <!-- Arrow -->
+  <line x1="240" y1="328" x2="240" y2="344" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrowAmber)"/>
+
+  <!-- Step 4: Lock double-buffer -->
+  <rect x="60" y="348" width="360" height="62" rx="8" fill="white" stroke="#d97706" stroke-width="1.5"/>
+  <circle cx="82" cy="371" r="12" fill="#d97706"/>
+  <text x="82" y="376" text-anchor="middle" font-size="12" font-weight="700" fill="white">4</text>
+  <text x="105" y="366" font-size="11.5" font-weight="600" fill="#1a202c">Lock Double-Buffered Registers</text>
+  <text x="105" y="382" font-size="10" fill="#718096">EVERGREEN_GRPH_UPDATE_LOCK = 1</text>
+  <text x="105" y="398" font-size="10" fill="#718096">EVERGREEN_MASTER_UPDATE_LOCK = 1</text>
+
+  <!-- Arrow down to idle -->
+  <line x1="240" y1="410" x2="240" y2="430" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrowAmber)"/>
+
+  <!-- CRTC offset callout -->
+  <rect x="60" y="440" width="360" height="80" rx="8" fill="#fffbeb" stroke="#fbbf24" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="240" y="460" text-anchor="middle" font-size="11" font-weight="600" fill="#92400e">Evergreen CRTC Offsets</text>
+  <text x="80" y="478" font-size="9.5" font-family="'Consolas', 'Courier New', monospace" fill="#4a5568">CRTC0: 0x0000   CRTC1: 0x0800   CRTC2: 0x1000</text>
+  <text x="80" y="494" font-size="9.5" font-family="'Consolas', 'Courier New', monospace" fill="#4a5568">CRTC3: 0x1800   CRTC4: 0x2000   CRTC5: 0x2800</text>
+  <text x="240" y="512" text-anchor="middle" font-size="9.5" fill="#b45309" font-style="italic">Base register + offset = per-CRTC register address</text>
+
+  <!-- ===== CENTER: Idle + Reconfig ===== -->
+  <!-- Idle Wait -->
+  <rect x="340" y="430" width="260" height="52" rx="26" fill="url(#idleGrad)" stroke="#6366f1" stroke-width="2" filter="url(#dropShadow)"/>
+  <text x="470" y="452" text-anchor="middle" font-size="13" font-weight="700" fill="#3730a3">MC Idle Wait</text>
+  <text x="470" y="468" text-anchor="middle" font-size="10" fill="#4338ca">radeon_gpu_mc_idlewait()</text>
+
+  <!-- Arrow from halt to idle -->
+  <path d="M 420 456 L 340 456" stroke="none"/>
+  <!-- Arrow from idle to reconfig -->
+  <line x1="470" y1="482" x2="470" y2="510" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrowDark)"/>
+
+  <!-- Reconfigure -->
+  <rect x="355" y="514" width="230" height="52" rx="10" fill="url(#reconfigGrad)" stroke="#db2777" stroke-width="2" filter="url(#dropShadow)"/>
+  <text x="470" y="536" text-anchor="middle" font-size="13" font-weight="700" fill="#9d174d">Reconfigure MC</text>
+  <text x="470" y="552" text-anchor="middle" font-size="10" fill="#be185d">Update base addresses, aperture</text>
+
+  <!-- Arrow from reconfig to resume -->
+  <line x1="585" y1="540" x2="620" y2="540" stroke="#db2777" stroke-width="1.5"/>
+  <line x1="620" y1="540" x2="620" y2="100" stroke="#059669" stroke-width="1.5"/>
+  <line x1="620" y1="100" x2="700" y2="100" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+
+  <!-- ===== RESUME PHASE ===== -->
+  <rect x="490" y="75" width="420" height="350" rx="14" fill="url(#resumeGrad)" stroke="#059669" stroke-width="2" filter="url(#dropShadow)"/>
+  <text x="700" y="100" text-anchor="middle" font-size="16" font-weight="700" fill="#065f46">RESUME PHASE</text>
+
+  <!-- Step 5: Surface addresses -->
+  <rect x="520" y="118" width="360" height="62" rx="8" fill="white" stroke="#059669" stroke-width="1.5"/>
+  <circle cx="542" cy="141" r="12" fill="#059669"/>
+  <text x="542" y="146" text-anchor="middle" font-size="12" font-weight="700" fill="white">5</text>
+  <text x="565" y="136" font-size="11.5" font-weight="600" fill="#1a202c">Write 64-bit Surface Addresses</text>
+  <text x="565" y="153" font-size="10" fill="#718096">GRPH_PRIMARY_SURFACE_ADDRESS_HIGH, then LOW</text>
+  <text x="565" y="169" font-size="10" fill="#718096">All 6 CRTCs + VGA_MEMORY_BASE (high + low)</text>
+
+  <!-- Arrow -->
+  <line x1="700" y1="180" x2="700" y2="196" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+
+  <!-- Step 6: Unlock -->
+  <rect x="520" y="200" width="360" height="62" rx="8" fill="white" stroke="#059669" stroke-width="1.5"/>
+  <circle cx="542" cy="223" r="12" fill="#059669"/>
+  <text x="542" y="228" text-anchor="middle" font-size="12" font-weight="700" fill="white">6</text>
+  <text x="565" y="218" font-size="11.5" font-weight="600" fill="#1a202c">Unlock &amp; Wait for Update</text>
+  <text x="565" y="234" font-size="10" fill="#718096">Clear GRPH_UPDATE_LOCK, MASTER_UPDATE_LOCK</text>
+  <text x="565" y="250" font-size="10" fill="#718096">Poll GRPH_SURFACE_UPDATE_PENDING until clear</text>
+
+  <!-- Arrow -->
+  <line x1="700" y1="262" x2="700" y2="278" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+
+  <!-- Step 7: Re-enable -->
+  <rect x="520" y="282" width="360" height="62" rx="8" fill="white" stroke="#059669" stroke-width="1.5"/>
+  <circle cx="542" cy="305" r="12" fill="#059669"/>
+  <text x="542" y="310" text-anchor="middle" font-size="12" font-weight="700" fill="white">7</text>
+  <text x="565" y="300" font-size="11.5" font-weight="600" fill="#1a202c">Re-enable CRTCs &amp; Restore VGA</text>
+  <text x="565" y="316" font-size="10" fill="#718096">Set CRTC_MASTER_EN, clear DISP_READ_REQUEST_DISABLE</text>
+  <text x="565" y="332" font-size="10" fill="#718096">Restore VGA_HDP_CONTROL, VGA_RENDER_CONTROL</text>
+
+  <!-- Legend -->
+  <rect x="490" y="600" width="420" height="90" rx="10" fill="white" stroke="#e2e8f0" stroke-width="1.5" filter="url(#dropShadow)"/>
+  <text x="510" y="622" font-size="12" font-weight="700" fill="#1a202c">Key Difference from AVIVO (old code):</text>
+  <text x="510" y="640" font-size="10.5" fill="#e53e3e">AVIVO: 2 CRTCs, 32-bit addresses, wrong register offsets</text>
+  <text x="510" y="656" font-size="10.5" fill="#059669">Evergreen: 6 CRTCs, 64-bit addresses, double-buffer locking</text>
+  <text x="510" y="674" font-size="10.5" fill="#059669">VBlank-synchronized blanking, proper surface update polling</text>
+</svg>

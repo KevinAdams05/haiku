@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="userlandGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8f4fd"/>
+      <stop offset="100%" stop-color="#d0e8f7"/>
+    </linearGradient>
+    <linearGradient id="kernelGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fde8e8"/>
+      <stop offset="100%" stop-color="#f7d0d0"/>
+    </linearGradient>
+    <linearGradient id="fileGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f0f4f8"/>
+    </linearGradient>
+    <linearGradient id="headerGradBlue" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2b6cb0"/>
+      <stop offset="100%" stop-color="#3182ce"/>
+    </linearGradient>
+    <linearGradient id="headerGradRed" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#c53030"/>
+      <stop offset="100%" stop-color="#e53e3e"/>
+    </linearGradient>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00000020"/>
+    </filter>
+    <filter id="shadowSmall" x="-2%" y="-4%" width="104%" height="112%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#00000018"/>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <text x="450" y="35" text-anchor="middle" font-size="20" font-weight="700" fill="#1a202c">Haiku radeon_hd Driver Architecture</text>
+  <line x1="200" y1="45" x2="700" y2="45" stroke="#cbd5e0" stroke-width="1"/>
+
+  <!-- Divider line -->
+  <line x1="30" y1="310" x2="870" y2="310" stroke="#718096" stroke-width="2" stroke-dasharray="8,4"/>
+  <rect x="370" y="298" width="160" height="24" rx="12" fill="#edf2f7" stroke="#a0aec0" stroke-width="1"/>
+  <text x="450" y="315" text-anchor="middle" font-size="11" font-weight="600" fill="#4a5568">Kernel / User Boundary</text>
+
+  <!-- Userland Section -->
+  <rect x="30" y="60" width="840" height="240" rx="12" fill="url(#userlandGrad)" stroke="#90cdf4" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="30" y="60" width="840" height="32" rx="12" fill="url(#headerGradBlue)"/>
+  <rect x="30" y="80" width="840" height="12" fill="url(#headerGradBlue)"/>
+  <text x="450" y="82" text-anchor="middle" font-size="14" font-weight="700" fill="white">Userland — Accelerant</text>
+
+  <!-- mode.cpp -->
+  <rect x="60" y="108" width="185" height="100" rx="8" fill="url(#fileGrad)" stroke="#63b3ed" stroke-width="1.5" filter="url(#shadowSmall)"/>
+  <rect x="60" y="108" width="185" height="26" rx="8" fill="#4299e1"/>
+  <rect x="60" y="122" width="185" height="12" fill="#4299e1"/>
+  <text x="152" y="126" text-anchor="middle" font-size="12" font-weight="700" fill="white">mode.cpp</text>
+  <text x="152" y="152" text-anchor="middle" font-size="10.5" fill="#2d3748">Mode validation</text>
+  <text x="152" y="168" text-anchor="middle" font-size="10.5" fill="#2d3748">Pixel clock limits</text>
+  <text x="152" y="184" text-anchor="middle" font-size="10.5" fill="#2d3748">EDID range checks</text>
+  <text x="152" y="200" text-anchor="middle" font-size="10.5" fill="#e53e3e" font-weight="600">FIXED: clock caps</text>
+
+  <!-- display.cpp -->
+  <rect x="265" y="108" width="185" height="100" rx="8" fill="url(#fileGrad)" stroke="#63b3ed" stroke-width="1.5" filter="url(#shadowSmall)"/>
+  <rect x="265" y="108" width="185" height="26" rx="8" fill="#4299e1"/>
+  <rect x="265" y="122" width="185" height="12" fill="#4299e1"/>
+  <text x="357" y="126" text-anchor="middle" font-size="12" font-weight="700" fill="white">display.cpp</text>
+  <text x="357" y="152" text-anchor="middle" font-size="10.5" fill="#2d3748">Encoder configuration</text>
+  <text x="357" y="168" text-anchor="middle" font-size="10.5" fill="#2d3748">Connector type mapping</text>
+  <text x="357" y="184" text-anchor="middle" font-size="10.5" fill="#2d3748">HDMI / DVI / VGA select</text>
+  <text x="357" y="200" text-anchor="middle" font-size="10.5" fill="#e53e3e" font-weight="600">FIXED: HDMI mode</text>
+
+  <!-- gpu.cpp -->
+  <rect x="470" y="108" width="185" height="100" rx="8" fill="url(#fileGrad)" stroke="#63b3ed" stroke-width="1.5" filter="url(#shadowSmall)"/>
+  <rect x="470" y="108" width="185" height="26" rx="8" fill="#4299e1"/>
+  <rect x="470" y="122" width="185" height="12" fill="#4299e1"/>
+  <text x="562" y="126" text-anchor="middle" font-size="12" font-weight="700" fill="white">gpu.cpp</text>
+  <text x="562" y="152" text-anchor="middle" font-size="10.5" fill="#2d3748">GPU reset</text>
+  <text x="562" y="168" text-anchor="middle" font-size="10.5" fill="#2d3748">MC halt / resume</text>
+  <text x="562" y="184" text-anchor="middle" font-size="10.5" fill="#2d3748">MC setup &amp; idle wait</text>
+  <text x="562" y="200" text-anchor="middle" font-size="10.5" fill="#e53e3e" font-weight="600">FIXED: EG registers</text>
+
+  <!-- accelerant.h + gpu.h + evergreen_reg.h -->
+  <rect x="675" y="108" width="175" height="100" rx="8" fill="url(#fileGrad)" stroke="#63b3ed" stroke-width="1.5" filter="url(#shadowSmall)"/>
+  <rect x="675" y="108" width="175" height="26" rx="8" fill="#4299e1"/>
+  <rect x="675" y="122" width="175" height="12" fill="#4299e1"/>
+  <text x="762" y="126" text-anchor="middle" font-size="12" font-weight="700" fill="white">Headers</text>
+  <text x="762" y="150" text-anchor="middle" font-size="10.5" fill="#2d3748">accelerant.h</text>
+  <text x="762" y="166" text-anchor="middle" font-size="10.5" fill="#2d3748">gpu.h</text>
+  <text x="762" y="182" text-anchor="middle" font-size="10.5" fill="#2d3748">evergreen_reg.h</text>
+  <text x="762" y="200" text-anchor="middle" font-size="10.5" fill="#718096" font-style="italic">Structs &amp; registers</text>
+
+  <!-- Flow arrows between accelerant files -->
+  <defs>
+    <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#4299e1"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#718096"/>
+    </marker>
+  </defs>
+
+  <!-- Arrows: mode -> display -> gpu -->
+  <line x1="152" y1="220" x2="152" y2="248" stroke="#4299e1" stroke-width="1.5"/>
+  <line x1="357" y1="220" x2="357" y2="248" stroke="#4299e1" stroke-width="1.5"/>
+  <line x1="562" y1="220" x2="562" y2="248" stroke="#4299e1" stroke-width="1.5"/>
+
+  <!-- Shared info bar -->
+  <rect x="60" y="248" width="595" height="28" rx="6" fill="#ebf8ff" stroke="#90cdf4" stroke-width="1"/>
+  <text x="357" y="267" text-anchor="middle" font-size="11" fill="#2b6cb0" font-weight="600">gInfo-&gt;shared_info  /  gConnector[]  /  gDisplay[]  (shared memory)</text>
+
+  <!-- Kernel Section -->
+  <rect x="30" y="330" width="840" height="180" rx="12" fill="url(#kernelGrad)" stroke="#feb2b2" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="30" y="330" width="840" height="32" rx="12" fill="url(#headerGradRed)"/>
+  <rect x="30" y="350" width="840" height="12" fill="url(#headerGradRed)"/>
+  <text x="450" y="352" text-anchor="middle" font-size="14" font-weight="700" fill="white">Kernel — Driver</text>
+
+  <!-- driver.cpp -->
+  <rect x="60" y="378" width="250" height="110" rx="8" fill="url(#fileGrad)" stroke="#fc8181" stroke-width="1.5" filter="url(#shadowSmall)"/>
+  <rect x="60" y="378" width="250" height="26" rx="8" fill="#e53e3e"/>
+  <rect x="60" y="392" width="250" height="12" fill="#e53e3e"/>
+  <text x="185" y="396" text-anchor="middle" font-size="12" font-weight="700" fill="white">driver.cpp</text>
+  <text x="185" y="422" text-anchor="middle" font-size="10.5" fill="#2d3748">PCI device ID table</text>
+  <text x="185" y="438" text-anchor="middle" font-size="10.5" fill="#2d3748">Device init &amp; probe</text>
+  <text x="185" y="454" text-anchor="middle" font-size="10.5" fill="#2d3748">Memory mapping</text>
+  <text x="185" y="470" text-anchor="middle" font-size="10.5" fill="#2d3748">Interrupt handling</text>
+  <text x="185" y="486" text-anchor="middle" font-size="10.5" fill="#e53e3e" font-weight="600">FIXED: PCI IDs</text>
+
+  <!-- Hardware box -->
+  <rect x="400" y="378" width="450" height="110" rx="8" fill="#fffaf0" stroke="#ed8936" stroke-width="1.5" filter="url(#shadowSmall)"/>
+  <rect x="400" y="378" width="450" height="26" rx="8" fill="#ed8936"/>
+  <rect x="400" y="392" width="450" height="12" fill="#ed8936"/>
+  <text x="625" y="396" text-anchor="middle" font-size="12" font-weight="700" fill="white">Hardware Registers (MMIO)</text>
+  <text x="500" y="424" font-size="10.5" fill="#2d3748" font-weight="600">AVIVO (R500/R600):</text>
+  <text x="500" y="440" font-size="10" fill="#718096">D1CRTC_CONTROL 0x6080</text>
+  <text x="500" y="454" font-size="10" fill="#718096">2 CRTCs, 32-bit addresses</text>
+  <text x="680" y="424" font-size="10.5" fill="#2d3748" font-weight="600">Evergreen (DCE4+):</text>
+  <text x="680" y="440" font-size="10" fill="#38a169">EVERGREEN_CRTC_CONTROL 0x6e70</text>
+  <text x="680" y="454" font-size="10" fill="#38a169">6 CRTCs, 64-bit addresses</text>
+  <line x1="670" y1="414" x2="670" y2="460" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="625" y="480" text-anchor="middle" font-size="10" fill="#e53e3e" font-weight="600" font-style="italic">Bug: AVIVO registers were used for Evergreen hardware!</text>
+</svg>

@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 680" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="startGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dbeafe"/>
+      <stop offset="100%" stop-color="#bfdbfe"/>
+    </linearGradient>
+    <linearGradient id="decisionGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef9c3"/>
+      <stop offset="100%" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="acceptGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d1fae5"/>
+      <stop offset="100%" stop-color="#a7f3d0"/>
+    </linearGradient>
+    <linearGradient id="rejectGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fee2e2"/>
+      <stop offset="100%" stop-color="#fecaca"/>
+    </linearGradient>
+    <linearGradient id="newTagGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <filter id="ds" x="-3%" y="-3%" width="106%" height="110%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-color="#00000020"/>
+    </filter>
+    <marker id="aDown" markerWidth="8" markerHeight="6" refX="4" refY="6" orient="auto">
+      <path d="M0,0 L4,6 L8,0" fill="#4a5568"/>
+    </marker>
+    <marker id="aRight" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#4a5568"/>
+    </marker>
+    <marker id="aRed" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#dc2626"/>
+    </marker>
+    <marker id="aGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#059669"/>
+    </marker>
+    <marker id="aDownGreen" markerWidth="8" markerHeight="6" refX="4" refY="6" orient="auto">
+      <path d="M0,0 L4,6 L8,0" fill="#059669"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="360" y="32" text-anchor="middle" font-size="20" font-weight="700" fill="#1a202c">Pixel Clock Validation Flow</text>
+  <text x="360" y="52" text-anchor="middle" font-size="12" fill="#718096">is_mode_supported() — mode.cpp</text>
+
+  <!-- NEW badge -->
+  <rect x="490" y="38" width="42" height="18" rx="9" fill="url(#newTagGrad)"/>
+  <text x="511" y="51" text-anchor="middle" font-size="9" font-weight="700" fill="white">NEW</text>
+
+  <!-- Start node -->
+  <rect x="235" y="72" width="250" height="44" rx="22" fill="url(#startGrad)" stroke="#3b82f6" stroke-width="2" filter="url(#ds)"/>
+  <text x="360" y="99" text-anchor="middle" font-size="13" font-weight="600" fill="#1e40af">App requests display mode</text>
+
+  <!-- Arrow down -->
+  <line x1="360" y1="116" x2="360" y2="140" stroke="#4a5568" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+  <!-- Decision: pixel_clock > 165 MHz? -->
+  <polygon points="360,148 510,195 360,242 210,195" fill="url(#decisionGrad)" stroke="#d97706" stroke-width="2" filter="url(#ds)"/>
+  <text x="360" y="190" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">pixel_clock</text>
+  <text x="360" y="206" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">&gt; 165 MHz?</text>
+
+  <!-- No branch (left) -> skip to EDID -->
+  <line x1="210" y1="195" x2="100" y2="195" stroke="#059669" stroke-width="1.5"/>
+  <text x="155" y="188" text-anchor="middle" font-size="11" font-weight="600" fill="#059669">No</text>
+  <line x1="100" y1="195" x2="100" y2="540" stroke="#059669" stroke-width="1.5"/>
+  <line x1="100" y1="540" x2="235" y2="540" stroke="#059669" stroke-width="1.5" marker-end="url(#aGreen)"/>
+
+  <!-- Yes branch (down) -->
+  <line x1="360" y1="242" x2="360" y2="268" stroke="#4a5568" stroke-width="1.5" marker-end="url(#aDown)"/>
+  <text x="374" y="258" font-size="11" font-weight="600" fill="#b45309">Yes</text>
+
+  <!-- Decision: Connector type? -->
+  <rect x="240" y="272" width="240" height="42" rx="8" fill="url(#decisionGrad)" stroke="#d97706" stroke-width="2" filter="url(#ds)"/>
+  <text x="360" y="298" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">Which connector type?</text>
+
+  <!-- Branch lines from connector decision -->
+  <!-- HDMI-A branch (left) -->
+  <line x1="272" y1="314" x2="130" y2="350" stroke="#4a5568" stroke-width="1.5"/>
+  <text x="130" y="346" text-anchor="middle" font-size="10" font-weight="600" fill="#4a5568">HDMI-A</text>
+
+  <!-- DVI branch (center-left) -->
+  <line x1="330" y1="314" x2="330" y2="350" stroke="#4a5568" stroke-width="1.5"/>
+  <text x="330" y="346" text-anchor="middle" font-size="10" font-weight="600" fill="#4a5568">DVI-D/I</text>
+
+  <!-- HDMI-B branch (center-right) -->
+  <line x1="415" y1="314" x2="500" y2="350" stroke="#4a5568" stroke-width="1.5"/>
+  <text x="500" y="346" text-anchor="middle" font-size="10" font-weight="600" fill="#4a5568">HDMI-B</text>
+
+  <!-- Other branch (right) -->
+  <line x1="460" y1="314" x2="640" y2="350" stroke="#4a5568" stroke-width="1.5"/>
+  <text x="640" y="346" text-anchor="middle" font-size="10" font-weight="600" fill="#4a5568">Other</text>
+
+  <!-- ===== HDMI-A sub-decision ===== -->
+  <polygon points="130,358 220,390 130,422 40,390" fill="#fff7ed" stroke="#f59e0b" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="130" y="386" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">DCE6+?</text>
+  <text x="130" y="398" text-anchor="middle" font-size="9" fill="#b45309">(Cape Verde+)</text>
+
+  <!-- DCE6 Yes -> 340 MHz check -->
+  <line x1="130" y1="422" x2="130" y2="444" stroke="#4a5568" stroke-width="1.2" marker-end="url(#aDown)"/>
+  <text x="142" y="438" font-size="9" font-weight="600" fill="#059669">Yes</text>
+
+  <rect x="60" y="448" width="140" height="36" rx="6" fill="white" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="130" y="463" text-anchor="middle" font-size="10" fill="#4a5568">&gt; 340 MHz?</text>
+  <text x="130" y="476" text-anchor="middle" font-size="9" fill="#718096">HDMI 1.3+ limit</text>
+
+  <!-- > 340 -> reject -->
+  <line x1="200" y1="466" x2="235" y2="466" stroke="#dc2626" stroke-width="1.2" marker-end="url(#aRed)"/>
+
+  <!-- DCE6 No -> reject (< DCE6, > 165 already) -->
+  <line x1="40" y1="390" x2="20" y2="390" stroke="#dc2626" stroke-width="1.2"/>
+  <text x="22" y="384" font-size="9" font-weight="600" fill="#dc2626">No</text>
+  <line x1="20" y1="390" x2="20" y2="466" stroke="#dc2626" stroke-width="1.2"/>
+  <line x1="20" y1="466" x2="60" y2="466" stroke="#dc2626" stroke-width="1"/>
+  <text x="40" y="460" font-size="8" fill="#dc2626">165 MHz cap</text>
+
+  <!-- ===== DVI reject ===== -->
+  <rect x="270" y="358" width="120" height="50" rx="8" fill="url(#rejectGrad)" stroke="#dc2626" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="330" y="380" text-anchor="middle" font-size="11" font-weight="600" fill="#991b1b">REJECT</text>
+  <text x="330" y="396" text-anchor="middle" font-size="9" fill="#b91c1c">165 MHz max</text>
+  <text x="330" y="406" text-anchor="middle" font-size="8" fill="#dc2626">(single-link)</text>
+
+  <!-- ===== HDMI-B check ===== -->
+  <rect x="435" y="358" width="130" height="36" rx="6" fill="white" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="500" y="373" text-anchor="middle" font-size="10" fill="#4a5568">&gt; 340 MHz?</text>
+  <text x="500" y="386" text-anchor="middle" font-size="9" fill="#718096">DL-DVI limit</text>
+
+  <!-- > 340 -> reject -->
+  <line x1="500" y1="394" x2="500" y2="420" stroke="#dc2626" stroke-width="1.2"/>
+  <rect x="450" y="420" width="100" height="34" rx="6" fill="url(#rejectGrad)" stroke="#dc2626" stroke-width="1.2"/>
+  <text x="500" y="442" text-anchor="middle" font-size="10" font-weight="600" fill="#991b1b">REJECT</text>
+
+  <!-- ===== Other -> pass through ===== -->
+  <line x1="640" y1="350" x2="640" y2="540" stroke="#059669" stroke-width="1.5"/>
+  <line x1="640" y1="540" x2="485" y2="540" stroke="#059669" stroke-width="1.5"/>
+  <text x="650" y="440" font-size="10" fill="#059669" font-style="italic">No limit</text>
+
+  <!-- REJECT box (shared) -->
+  <rect x="240" y="454" width="80" height="30" rx="6" fill="url(#rejectGrad)" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="280" y="474" text-anchor="middle" font-size="10" font-weight="600" fill="#991b1b">sane = false</text>
+
+  <!-- ===== EDID Check (existing) ===== -->
+  <rect x="240" y="524" width="240" height="42" rx="8" fill="#f0f4f8" stroke="#94a3b8" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="360" y="542" text-anchor="middle" font-size="11.5" font-weight="600" fill="#334155">Check EDID frequency ranges</text>
+  <text x="360" y="558" text-anchor="middle" font-size="10" fill="#64748b">(existing validation — unchanged)</text>
+
+  <!-- Arrow down -->
+  <line x1="360" y1="566" x2="360" y2="592" stroke="#4a5568" stroke-width="1.5" marker-end="url(#aDown)"/>
+
+  <!-- Final decision -->
+  <polygon points="360,600 460,632 360,664 260,632" fill="url(#decisionGrad)" stroke="#d97706" stroke-width="2" filter="url(#ds)"/>
+  <text x="360" y="636" text-anchor="middle" font-size="12" font-weight="600" fill="#92400e">sane?</text>
+
+  <!-- Accept -->
+  <line x1="460" y1="632" x2="540" y2="632" stroke="#059669" stroke-width="2" marker-end="url(#aGreen)"/>
+  <rect x="544" y="614" width="130" height="38" rx="19" fill="url(#acceptGrad)" stroke="#059669" stroke-width="2" filter="url(#ds)"/>
+  <text x="609" y="638" text-anchor="middle" font-size="13" font-weight="700" fill="#065f46">ACCEPT</text>
+
+  <!-- Reject -->
+  <line x1="260" y1="632" x2="170" y2="632" stroke="#dc2626" stroke-width="2" marker-end="url(#aRed)"/>
+  <rect x="40" y="614" width="130" height="38" rx="19" fill="url(#rejectGrad)" stroke="#dc2626" stroke-width="2" filter="url(#ds)"/>
+  <text x="105" y="638" text-anchor="middle" font-size="13" font-weight="700" fill="#991b1b">REJECT</text>
+
+  <!-- Yes/No labels on final -->
+  <text x="500" y="624" font-size="11" font-weight="600" fill="#059669">Yes</text>
+  <text x="215" y="624" font-size="11" font-weight="600" fill="#dc2626">No</text>
+</svg>
