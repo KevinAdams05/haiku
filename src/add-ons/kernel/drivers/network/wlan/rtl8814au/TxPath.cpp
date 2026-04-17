@@ -277,27 +277,18 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 
 /*! Map a TX queue selection to the bulk OUT pipe index.
 
-    Queue priority mapping:
-      VO/VI/HIGH → pipe 0 (high priority)
-      BE/BK      → pipe 1 (normal priority)
-      MGT/CMD/BCN → pipe 2 (management)
+    The TxQueueSelect enum values are defined to equal the pipe index directly:
+      VO/VI/HIGH = 0 → pipe 0 (high priority)
+      BE/BK      = 1 → pipe 1 (normal priority)
+      MGT/CMD/BCN = 2 → pipe 2 (management)
 */
 uint32
 RTL8814AUTxPath::_QueueToPipeIndex(TxQueueSelect queue)
 {
-	switch (queue) {
-		case kTxQueueVO:
-		case kTxQueueHIGH:
-			return 0;
-		case kTxQueueBE:
-			return 1;
-		case kTxQueueMGT:
-		case kTxQueueCMD:
-		case kTxQueueBCN:
-			return 2;
-		default:
-			return 1;	// Default to best-effort
-	}
+	uint32 index = (uint32)queue;
+	if (index >= kBulkOutPipeCount)
+		return 1;	// Default to best-effort
+	return index;
 }
 
 
