@@ -11,4 +11,4 @@ KevinAdams05/haiku/rtl8814au-wifi-driver -> native USB WiFi driver for RTL8814AU
 **KevinAdams05/haiku/KevinMain -> where I will merge all my fixes. This acts as my current build.**
 
 This branch also contains:
-* NFSMount, a GUI utility to mount NFS shares. Once it's tested more I'll move it to it's own repo. Feel free to send PRs or log issues.
+* NFSMount, a GUI utility to mount NFS shares. This is ugly and needs a UI refinement, but it is working. Once it's tested more I'll move it to it's own repo. Feel free to send PRs or log issues.
