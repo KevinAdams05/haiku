@@ -539,7 +539,10 @@ RTL8814AUDevice::_ReadMacAddress()
 			allOnes = false;
 	}
 
-	if (allZero || allOnes) {
+	// Also reject multicast MACs (bit 0 of first byte must be 0 for unicast)
+	bool isMulticast = (fMacAddress[0] & 0x01) != 0;
+
+	if (allZero || allOnes || isMulticast) {
 		dprintf(RTL8814AU_DRIVER_NAME ": invalid MAC address in EFUSE, "
 			"using random address\n");
 		// Generate a locally-administered random MAC

@@ -14,3 +14,8 @@ KernelAddon rtl8814au :
 	RxPath.cpp
 	WiFiManagement.cpp
 	;
+
+# Firmware binary for the RTL8814AU's Lexra 3081 MIPS MCU.
+# Copied to /boot/system/data/firmware/rtl8814au/ at image build time.
+HAIKU_WIFI_FIRMWARE_ARCHIVE on rtl8814au = rtl8814aufw.bin ;
+HAIKU_WIFI_FIRMWARE_DO_EXTRACT on rtl8814au = false ;

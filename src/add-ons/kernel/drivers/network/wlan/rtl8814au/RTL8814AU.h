@@ -96,7 +96,7 @@ static const uint32 kAmpduMaxLength			= 0x1FFFF;	// 128 KB
 
 // Firmware path on Haiku filesystem
 #define RTL8814AU_FIRMWARE_PATH \
-	"/boot/system/data/firmware/rtl8814aufw.bin"
+	"/boot/system/data/firmware/rtl8814au/rtl8814aufw.bin"
 
 
 // ---------------------------------------------------------------------------
@@ -695,7 +695,7 @@ enum C2HEventID {
 // for the logical EFUSE map (after decoding the physical EFUSE).
 // ---------------------------------------------------------------------------
 
-static const uint16 kEfuseMacAddr			= 0x000;	// 6 bytes
+static const uint16 kEfuseMacAddr			= 0x107;	// 6 bytes (USB variant)
 static const uint16 kEfuseAntennaConfig		= 0x00E;	// TX + RX path config
 static const uint16 kEfuseRfeType			= 0x010;	// RF front-end type (0-6)
 static const uint16 kEfuseTxPwr2G			= 0x020;	// 2.4 GHz power table
