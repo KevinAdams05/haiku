@@ -1,5 +1,5 @@
 > [!WARNING]
-> This repo contains my own forks - this is not the offical Hakiu source! All of my branches may contain LLM assisted code. 
+> This repo contains my own forks - this is not the offical Haiku source! All of my branches may contain LLM assisted code. 
 >
 KevinAdams05/haiku/master ->the latest hrev I am am based off of
 
