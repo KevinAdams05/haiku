@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 920" font-family="'Noto Sans', 'DejaVu Sans', sans-serif" font-size="13">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333"/>
+    </marker>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2C5F8A"/>
+      <stop offset="100%" stop-color="#1E4060"/>
+    </linearGradient>
+    <linearGradient id="bbGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E8F0FE"/>
+      <stop offset="100%" stop-color="#D0E0F8"/>
+    </linearGradient>
+    <linearGradient id="rfGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFF3E0"/>
+      <stop offset="100%" stop-color="#FFE0B2"/>
+    </linearGradient>
+    <linearGradient id="agcGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E8F5E9"/>
+      <stop offset="100%" stop-color="#C8E6C9"/>
+    </linearGradient>
+    <linearGradient id="iqGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F3E5F5"/>
+      <stop offset="100%" stop-color="#E1BEE7"/>
+    </linearGradient>
+    <linearGradient id="txGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFF9C4"/>
+      <stop offset="100%" stop-color="#FFF176"/>
+    </linearGradient>
+    <linearGradient id="chGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFCCBC"/>
+      <stop offset="100%" stop-color="#FF8A65"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="800" height="50" rx="6" fill="url(#headerGrad)"/>
+  <text x="400" y="32" text-anchor="middle" fill="white" font-size="18" font-weight="bold">RTL8814AU PHY Initialization Flow</text>
+
+  <!-- Step 1: BB Register Init -->
+  <rect x="180" y="70" width="440" height="80" rx="8" fill="url(#bbGrad)" stroke="#2C5F8A" stroke-width="1.5"/>
+  <text x="400" y="93" text-anchor="middle" font-weight="bold" fill="#1A3A5C">1. Baseband (BB) Register Init</text>
+  <text x="400" y="112" text-anchor="middle" fill="#333" font-size="11">_InitBBRegisters() applies kBBInitTable</text>
+  <text x="400" y="128" text-anchor="middle" fill="#555" font-size="10">Common BB (0x800-0x8FF) + per-path digital (0xC00, 0xE00, 0x1800, 0x1A00)</text>
+  <text x="400" y="143" text-anchor="middle" fill="#555" font-size="10">Configures: OFDM/CCK modulation, timing, equalizer, path enables</text>
+
+  <!-- Arrow 1→2 -->
+  <line x1="400" y1="150" x2="400" y2="170" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Step 2: AGC Table -->
+  <rect x="180" y="175" width="440" height="70" rx="8" fill="url(#agcGrad)" stroke="#388E3C" stroke-width="1.5"/>
+  <text x="400" y="198" text-anchor="middle" font-weight="bold" fill="#1B5E20">2. AGC Table Load (Band-Specific)</text>
+  <text x="400" y="217" text-anchor="middle" fill="#333" font-size="11">kAGCTable2G (default) or kAGCTable5G</text>
+  <text x="400" y="233" text-anchor="middle" fill="#555" font-size="10">64 gain indices per path (A/B/C/D) via registers 0xC78, 0xE78, 0x1878, 0x1A78</text>
+
+  <!-- Arrow 2→3 -->
+  <line x1="400" y1="245" x2="400" y2="265" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Step 3: RF Register Init -->
+  <rect x="100" y="270" width="600" height="130" rx="8" fill="url(#rfGrad)" stroke="#E65100" stroke-width="1.5"/>
+  <text x="400" y="293" text-anchor="middle" font-weight="bold" fill="#BF360C">3. RF Transceiver Init (4 Paths)</text>
+  <text x="400" y="312" text-anchor="middle" fill="#333" font-size="11">_InitRFRegisters() — common + per-path trim</text>
+
+  <!-- 4 path boxes inside RF -->
+  <rect x="120" y="325" width="130" height="60" rx="5" fill="white" stroke="#E65100" stroke-width="1"/>
+  <text x="185" y="345" text-anchor="middle" font-weight="bold" fill="#BF360C" font-size="11">Path A</text>
+  <text x="185" y="360" text-anchor="middle" fill="#555" font-size="9">Base: 0x2800</text>
+  <text x="185" y="373" text-anchor="middle" fill="#555" font-size="9">Common + PathA trim</text>
+
+  <rect x="260" y="325" width="130" height="60" rx="5" fill="white" stroke="#E65100" stroke-width="1"/>
+  <text x="325" y="345" text-anchor="middle" font-weight="bold" fill="#BF360C" font-size="11">Path B</text>
+  <text x="325" y="360" text-anchor="middle" fill="#555" font-size="9">Base: 0x2C00</text>
+  <text x="325" y="373" text-anchor="middle" fill="#555" font-size="9">Common + PathB trim</text>
+
+  <rect x="400" y="325" width="130" height="60" rx="5" fill="white" stroke="#E65100" stroke-width="1"/>
+  <text x="465" y="345" text-anchor="middle" font-weight="bold" fill="#BF360C" font-size="11">Path C</text>
+  <text x="465" y="360" text-anchor="middle" fill="#555" font-size="9">Base: 0x3800</text>
+  <text x="465" y="373" text-anchor="middle" fill="#555" font-size="9">Common + PathC trim</text>
+
+  <rect x="540" y="325" width="130" height="60" rx="5" fill="white" stroke="#E65100" stroke-width="1"/>
+  <text x="605" y="345" text-anchor="middle" font-weight="bold" fill="#BF360C" font-size="11">Path D</text>
+  <text x="605" y="360" text-anchor="middle" fill="#555" font-size="9">Base: 0x3C00</text>
+  <text x="605" y="373" text-anchor="middle" fill="#555" font-size="9">Common + PathD trim</text>
+
+  <!-- Arrow 3→4 -->
+  <line x1="400" y1="400" x2="400" y2="420" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Step 4: IQ Calibration -->
+  <rect x="180" y="425" width="440" height="90" rx="8" fill="url(#iqGrad)" stroke="#7B1FA2" stroke-width="1.5"/>
+  <text x="400" y="448" text-anchor="middle" font-weight="bold" fill="#4A148C">4. IQ Calibration</text>
+  <text x="400" y="467" text-anchor="middle" fill="#333" font-size="11">_RunIQCalibration() — per-path TX/RX I/Q correction</text>
+  <text x="400" y="483" text-anchor="middle" fill="#555" font-size="10">Save regs -> cal mode -> send tones -> measure I/Q mismatch</text>
+  <text x="400" y="499" text-anchor="middle" fill="#555" font-size="10">-> compute coefficients -> write to HW -> restore regs</text>
+  <text x="618" y="448" text-anchor="start" fill="#7B1FA2" font-size="10" font-style="italic">(non-fatal)</text>
+
+  <!-- Arrow 4→5 -->
+  <line x1="400" y1="515" x2="400" y2="535" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Step 5: TX Power -->
+  <rect x="180" y="540" width="440" height="80" rx="8" fill="url(#txGrad)" stroke="#F9A825" stroke-width="1.5"/>
+  <text x="400" y="563" text-anchor="middle" font-weight="bold" fill="#795548">5. TX Power Configuration</text>
+  <text x="400" y="582" text-anchor="middle" fill="#333" font-size="11">_SetTxPower() — read EFUSE per-path/per-group indices</text>
+  <text x="400" y="598" text-anchor="middle" fill="#555" font-size="10">14 channel groups (5x 2.4 GHz + 9x 5 GHz) x 4 paths</text>
+  <text x="400" y="613" text-anchor="middle" fill="#555" font-size="10">Written to CCK/OFDM/HT/VHT power registers per path</text>
+
+  <!-- Arrow 5→6 -->
+  <line x1="400" y1="620" x2="400" y2="640" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Step 6: Set Channel -->
+  <rect x="180" y="645" width="440" height="70" rx="8" fill="url(#chGrad)" stroke="#D84315" stroke-width="1.5"/>
+  <text x="400" y="668" text-anchor="middle" font-weight="bold" fill="#BF360C">6. Initial Channel Set (Ch 1, 20 MHz)</text>
+  <text x="400" y="687" text-anchor="middle" fill="#333" font-size="11">SetChannel() — RF synthesizer + BW + TX power</text>
+  <text x="400" y="703" text-anchor="middle" fill="#555" font-size="10">RF reg 0x18 on all paths, BB BW regs, power update</text>
+
+  <!-- Arrow 6→Done -->
+  <line x1="400" y1="715" x2="400" y2="735" stroke="#333" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Done -->
+  <rect x="310" y="740" width="180" height="36" rx="18" fill="#2C5F8A" stroke="none"/>
+  <text x="400" y="763" text-anchor="middle" fill="white" font-weight="bold">PHY Ready</text>
+
+  <!-- Side notes: Data sources -->
+  <rect x="20" y="70" width="145" height="175" rx="6" fill="#F5F5F5" stroke="#999" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="92" y="90" text-anchor="middle" font-weight="bold" fill="#555" font-size="11">Data Sources</text>
+  <text x="30" y="110" fill="#555" font-size="10">PhyRegTables.h:</text>
+  <text x="35" y="126" fill="#666" font-size="9">- kBBInitTable</text>
+  <text x="35" y="140" fill="#666" font-size="9">- kAGCTable2G/5G</text>
+  <text x="35" y="154" fill="#666" font-size="9">- kRFInitCommon</text>
+  <text x="35" y="168" fill="#666" font-size="9">- kRFInitPath{A-D}</text>
+  <line x1="30" y1="178" x2="155" y2="178" stroke="#CCC" stroke-width="0.5"/>
+  <text x="30" y="195" fill="#555" font-size="10">EFUSE Map:</text>
+  <text x="35" y="211" fill="#666" font-size="9">- TX power tables</text>
+  <text x="35" y="225" fill="#666" font-size="9">- Antenna config</text>
+  <text x="35" y="239" fill="#666" font-size="9">- RFE type</text>
+
+  <!-- Side note: Channel Switch -->
+  <rect x="635" y="540" width="150" height="175" rx="6" fill="#FFF8E1" stroke="#F9A825" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="710" y="560" text-anchor="middle" font-weight="bold" fill="#795548" font-size="11">Channel Switch</text>
+  <text x="710" y="580" text-anchor="middle" fill="#555" font-size="10">(SetChannel)</text>
+  <text x="645" y="600" fill="#666" font-size="9">1. RF synth (all 4)</text>
+  <text x="645" y="616" fill="#666" font-size="9">2. LNA band switch</text>
+  <text x="645" y="632" fill="#666" font-size="9">3. AGC table reload</text>
+  <text x="645" y="648" fill="#666" font-size="9">4. BW config</text>
+  <text x="645" y="664" fill="#666" font-size="9">5. TX power update</text>
+  <line x1="645" y1="674" x2="775" y2="674" stroke="#CCC" stroke-width="0.5"/>
+  <text x="645" y="692" fill="#999" font-size="9" font-style="italic">AGC reload only</text>
+  <text x="645" y="706" fill="#999" font-size="9" font-style="italic">on band change</text>
+
+  <!-- Legend -->
+  <text x="20" y="810" font-weight="bold" fill="#333" font-size="12">Register Table Sizes:</text>
+  <rect x="20" y="820" width="14" height="14" rx="2" fill="url(#bbGrad)" stroke="#2C5F8A" stroke-width="1"/>
+  <text x="40" y="832" fill="#333" font-size="11">BB Init: ~250 entries (common + 4 paths)</text>
+  <rect x="20" y="840" width="14" height="14" rx="2" fill="url(#agcGrad)" stroke="#388E3C" stroke-width="1"/>
+  <text x="40" y="852" fill="#333" font-size="11">AGC: 256 entries per band (64/path x 4 paths)</text>
+  <rect x="400" y="820" width="14" height="14" rx="2" fill="url(#rfGrad)" stroke="#E65100" stroke-width="1"/>
+  <text x="420" y="832" fill="#333" font-size="11">RF Common: ~40 entries/path</text>
+  <rect x="400" y="840" width="14" height="14" rx="2" fill="url(#rfGrad)" stroke="#E65100" stroke-width="1"/>
+  <text x="420" y="852" fill="#333" font-size="11">RF Trim: ~8 entries/path (path-specific)</text>
+
+  <!-- Footer -->
+  <text x="400" y="895" text-anchor="middle" fill="#999" font-size="10">Reference: halhwimg8814a_bb.c, halhwimg8814a_rf.c, rtl8814a_phycfg.c</text>
+  <text x="400" y="910" text-anchor="middle" fill="#999" font-size="10">RTL8814AU Native Haiku Driver - PHY Configuration Module</text>
+</svg>

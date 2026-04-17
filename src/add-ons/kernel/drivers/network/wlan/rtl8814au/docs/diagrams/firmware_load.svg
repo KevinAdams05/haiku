@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 750 680" font-family="Noto Sans, Inter, sans-serif">
+  <defs>
+    <style>
+      .title { font-size: 16px; fill: #1a1a2e; font-weight: 700; text-anchor: middle; }
+      .step-box { fill: #e8f5e9; stroke: #2e7d32; stroke-width: 1.5; rx: 6; }
+      .check-box { fill: #fff3e0; stroke: #e65100; stroke-width: 1.5; rx: 20; }
+      .fail-box { fill: #f8d7da; stroke: #dc3545; stroke-width: 1.5; rx: 6; }
+      .note-box { fill: #f8f9fa; stroke: #9e9e9e; stroke-width: 1; rx: 4; }
+      .lbl { font-size: 12px; fill: #212529; text-anchor: middle; dominant-baseline: central; font-weight: 600; }
+      .lbl-sm { font-size: 10px; fill: #495057; text-anchor: middle; dominant-baseline: central; }
+      .lbl-code { font-size: 9.5px; fill: #1565c0; text-anchor: middle; dominant-baseline: central; font-family: monospace; }
+      .step-num { font-size: 11px; fill: #fff; text-anchor: middle; dominant-baseline: central; font-weight: 700; }
+      .arrow { stroke: #495057; stroke-width: 1.5; marker-end: url(#ah); }
+      .arrow-yes { stroke: #2e7d32; stroke-width: 1.5; marker-end: url(#ah-g); }
+      .arrow-no { stroke: #dc3545; stroke-width: 1.5; marker-end: url(#ah-r); }
+      .yes-lbl { font-size: 10px; fill: #2e7d32; font-weight: 600; }
+      .no-lbl { font-size: 10px; fill: #dc3545; font-weight: 600; }
+    </style>
+    <marker id="ah" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#495057"/>
+    </marker>
+    <marker id="ah-g" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#2e7d32"/>
+    </marker>
+    <marker id="ah-r" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0, 7 2.5, 0 5" fill="#dc3545"/>
+    </marker>
+  </defs>
+
+  <text x="375" y="25" class="title">RTL8814AU Firmware Loading Sequence</text>
+  <text x="375" y="42" class="lbl-sm">Lexra 3081 MIPS core — dual-section DMA load (DMEM + IRAM)</text>
+
+  <!-- Step 1 -->
+  <circle cx="105" cy="75" r="12" fill="#2e7d32"/>
+  <text x="105" y="75" class="step-num">1</text>
+  <rect x="125" y="60" width="250" height="34" class="step-box"/>
+  <text x="250" y="72" class="lbl">Load firmware from filesystem</text>
+  <text x="250" y="85" class="lbl-code">/boot/system/data/firmware/rtl8814aufw.bin</text>
+
+  <line x1="250" y1="94" x2="250" y2="114" class="arrow"/>
+
+  <!-- Step 2 -->
+  <circle cx="105" cy="130" r="12" fill="#2e7d32"/>
+  <text x="105" y="130" class="step-num">2</text>
+  <rect x="125" y="115" width="250" height="34" class="step-box"/>
+  <text x="250" y="127" class="lbl">Validate firmware header</text>
+  <text x="250" y="140" class="lbl-code">Check signature, version, size ≤ 96 KB</text>
+
+  <line x1="250" y1="149" x2="250" y2="167" class="arrow"/>
+
+  <!-- Check: valid? -->
+  <rect x="185" y="167" width="130" height="36" class="check-box"/>
+  <text x="250" y="185" class="lbl">Valid?</text>
+
+  <!-- No path -->
+  <line x1="315" y1="185" x2="430" y2="185" class="arrow-no"/>
+  <text x="370" y="178" class="no-lbl">No</text>
+  <rect x="430" y="170" width="140" height="30" class="fail-box"/>
+  <text x="500" y="185" class="lbl" fill="#dc3545">Return B_BAD_DATA</text>
+
+  <!-- Yes path -->
+  <line x1="250" y1="203" x2="250" y2="225" class="arrow-yes"/>
+  <text x="262" y="216" class="yes-lbl">Yes</text>
+
+  <!-- Step 3 -->
+  <circle cx="105" cy="242" r="12" fill="#2e7d32"/>
+  <text x="105" y="242" class="step-num">3</text>
+  <rect x="125" y="227" width="250" height="34" class="step-box"/>
+  <text x="250" y="239" class="lbl">Enable firmware download mode</text>
+  <text x="250" y="252" class="lbl-code">Set bits 0,12,13 in REG_8051FW_CTRL</text>
+
+  <line x1="250" y1="261" x2="250" y2="283" class="arrow"/>
+
+  <!-- Step 4 -->
+  <circle cx="105" cy="300" r="12" fill="#2e7d32"/>
+  <text x="105" y="300" class="step-num">4</text>
+  <rect x="125" y="285" width="250" height="34" class="step-box"/>
+  <text x="250" y="297" class="lbl">Disable MCU (Lexra 3081)</text>
+  <text x="250" y="310" class="lbl-code">Clear bit 2 of REG_SYS_FUNC_EN+1</text>
+
+  <line x1="250" y1="319" x2="250" y2="341" class="arrow"/>
+
+  <!-- Step 5: Two parallel DMA ops -->
+  <circle cx="105" cy="370" r="12" fill="#2e7d32"/>
+  <text x="105" y="370" class="step-num">5</text>
+
+  <rect x="125" y="343" width="190" height="55" class="step-box"/>
+  <text x="220" y="358" class="lbl">DMA DMEM section</text>
+  <text x="220" y="372" class="lbl-sm">Data memory (≤ 32 KB)</text>
+  <text x="220" y="386" class="lbl-code">IDDMADownLoadFW_3081()</text>
+
+  <rect x="340" y="343" width="190" height="55" class="step-box"/>
+  <text x="435" y="358" class="lbl">DMA IRAM section</text>
+  <text x="435" y="372" class="lbl-sm">Instruction memory (≤ 64 KB)</text>
+  <text x="435" y="386" class="lbl-code">IDDMADownLoadFW_3081()</text>
+
+  <!-- Note about internal DMA -->
+  <rect x="555" y="343" width="175" height="55" class="note-box"/>
+  <text x="642" y="358" class="lbl-sm">Uses chip's internal</text>
+  <text x="642" y="372" class="lbl-sm">DMA engine — NOT the</text>
+  <text x="642" y="386" class="lbl-sm">8051 page-write method</text>
+
+  <line x1="250" y1="398" x2="250" y2="420" class="arrow"/>
+
+  <!-- Step 6 -->
+  <circle cx="105" cy="437" r="12" fill="#2e7d32"/>
+  <text x="105" y="437" class="step-num">6</text>
+  <rect x="125" y="422" width="250" height="34" class="step-box"/>
+  <text x="250" y="434" class="lbl">Re-enable MCU</text>
+  <text x="250" y="447" class="lbl-code">Set bit 2 of REG_SYS_FUNC_EN+1</text>
+
+  <line x1="250" y1="456" x2="250" y2="473" class="arrow"/>
+
+  <!-- Step 7 -->
+  <circle cx="105" cy="490" r="12" fill="#2e7d32"/>
+  <text x="105" y="490" class="step-num">7</text>
+  <rect x="125" y="475" width="250" height="34" class="step-box"/>
+  <text x="250" y="487" class="lbl">Disable download mode</text>
+  <text x="250" y="500" class="lbl-code">Clear bits in REG_8051FW_CTRL</text>
+
+  <line x1="250" y1="509" x2="250" y2="527" class="arrow"/>
+
+  <!-- Step 8: Poll -->
+  <circle cx="105" cy="547" r="12" fill="#2e7d32"/>
+  <text x="105" y="547" class="step-num">8</text>
+  <rect x="125" y="530" width="250" height="38" class="step-box"/>
+  <text x="250" y="543" class="lbl">Poll for CPU_DL_READY</text>
+  <text x="250" y="557" class="lbl-code">100 attempts × 50 ms = 5 sec timeout</text>
+
+  <line x1="250" y1="568" x2="250" y2="585" class="arrow"/>
+
+  <!-- Check: ready? -->
+  <rect x="185" y="585" width="130" height="36" class="check-box"/>
+  <text x="250" y="603" class="lbl">Ready?</text>
+
+  <!-- No path -->
+  <line x1="315" y1="603" x2="430" y2="603" class="arrow-no"/>
+  <text x="370" y="596" class="no-lbl">No</text>
+  <rect x="430" y="588" width="150" height="30" class="fail-box"/>
+  <text x="505" y="603" class="lbl" fill="#dc3545">Return B_TIMED_OUT</text>
+
+  <!-- Yes path -->
+  <line x1="250" y1="621" x2="250" y2="645" class="arrow-yes"/>
+  <text x="262" y="635" class="yes-lbl">Yes</text>
+
+  <!-- Done -->
+  <rect x="175" y="645" width="150" height="30" fill="#c8e6c9" stroke="#2e7d32" stroke-width="2" rx="15"/>
+  <text x="250" y="660" class="lbl" fill="#1b5e20">Firmware Running</text>
+</svg>

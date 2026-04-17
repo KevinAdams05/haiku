@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 540" font-family="Noto Sans, Inter, sans-serif">
+  <defs>
+    <style>
+      .title { font-size: 16px; fill: #1a1a2e; font-weight: 700; text-anchor: middle; }
+      .box { rx: 6; stroke-width: 1.5; }
+      .box-tx { fill: #e3f2fd; stroke: #1565c0; }
+      .box-rx { fill: #e8f5e9; stroke: #2e7d32; }
+      .box-hw { fill: #fff3e0; stroke: #e65100; }
+      .box-usb { fill: #f3e5f5; stroke: #7b1fa2; }
+      .lbl { font-size: 12px; fill: #212529; text-anchor: middle; dominant-baseline: central; font-weight: 600; }
+      .lbl-sm { font-size: 10px; fill: #495057; text-anchor: middle; dominant-baseline: central; }
+      .lbl-code { font-size: 9.5px; fill: #1565c0; text-anchor: middle; dominant-baseline: central; font-family: monospace; }
+      .arrow-tx { stroke: #1565c0; stroke-width: 2; marker-end: url(#ah-b); }
+      .arrow-rx { stroke: #2e7d32; stroke-width: 2; marker-end: url(#ah-g); }
+      .sec-lbl { font-size: 13px; fill: #1a1a2e; font-weight: 700; }
+      .dim { font-size: 9px; fill: #9e9e9e; text-anchor: middle; dominant-baseline: central; }
+    </style>
+    <marker id="ah-b" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#1565c0"/>
+    </marker>
+    <marker id="ah-g" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#2e7d32"/>
+    </marker>
+  </defs>
+
+  <text x="410" y="25" class="title">TX and RX Data Paths</text>
+
+  <!-- ==================== TX PATH (top half) ==================== -->
+  <text x="30" y="60" class="sec-lbl">TX PATH (Host → Air)</text>
+
+  <!-- TX Step 1: Network stack -->
+  <rect x="30" y="75" width="140" height="50" class="box box-tx"/>
+  <text x="100" y="93" class="lbl">Network Stack</text>
+  <text x="100" y="108" class="lbl-sm">net_buffer from</text>
+  <text x="100" y="120" class="lbl-sm">send_data()</text>
+
+  <line x1="170" y1="100" x2="195" y2="100" class="arrow-tx"/>
+
+  <!-- TX Step 2: Build descriptor -->
+  <rect x="197" y="75" width="150" height="50" class="box box-tx"/>
+  <text x="272" y="90" class="lbl">Build TX Descriptor</text>
+  <text x="272" y="105" class="lbl-sm">40-byte TX desc header</text>
+  <text x="272" y="118" class="lbl-code">rate, BW, MACID, seq#</text>
+
+  <line x1="347" y1="100" x2="372" y2="100" class="arrow-tx"/>
+
+  <!-- TX Step 3: Encryption -->
+  <rect x="374" y="75" width="130" height="50" class="box box-tx"/>
+  <text x="439" y="93" class="lbl">HW Encryption</text>
+  <text x="439" y="108" class="lbl-sm">Security CAM lookup</text>
+  <text x="439" y="120" class="lbl-code">WPA2 AES-CCMP</text>
+
+  <line x1="504" y1="100" x2="529" y2="100" class="arrow-tx"/>
+
+  <!-- TX Step 4: USB bulk out -->
+  <rect x="531" y="75" width="130" height="50" class="box box-usb"/>
+  <text x="596" y="90" class="lbl">USB Bulk OUT</text>
+  <text x="596" y="105" class="lbl-sm">3 bulk OUT pipes</text>
+  <text x="596" y="118" class="lbl-code">queue_bulk()</text>
+
+  <line x1="661" y1="100" x2="686" y2="100" class="arrow-tx"/>
+
+  <!-- TX Step 5: Hardware -->
+  <rect x="688" y="75" width="110" height="50" class="box box-hw"/>
+  <text x="743" y="93" class="lbl">RTL8814AU</text>
+  <text x="743" y="108" class="lbl-sm">DMA → MAC →</text>
+  <text x="743" y="120" class="lbl-sm">BB → RF → Air</text>
+
+  <!-- TX descriptor detail -->
+  <rect x="30" y="145" width="768" height="65" fill="#f8f9fa" stroke="#dee2e6" rx="4"/>
+  <text x="40" y="162" class="lbl" text-anchor="start">TX Descriptor Format (40 bytes):</text>
+
+  <rect x="40" y="173" width="60" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="70" y="187" class="lbl-sm">PKT_LEN</text>
+  <rect x="105" y="173" width="50" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="130" y="187" class="lbl-sm">Offset</text>
+  <rect x="160" y="173" width="55" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="187" y="187" class="lbl-sm">MACID</text>
+  <rect x="220" y="173" width="55" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="247" y="187" class="lbl-sm">QueueSel</text>
+  <rect x="280" y="173" width="60" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="310" y="187" class="lbl-sm">DataRate</text>
+  <rect x="345" y="173" width="45" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="367" y="187" class="lbl-sm">BW</text>
+  <rect x="395" y="173" width="50" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="420" y="187" class="lbl-sm">SecType</text>
+  <rect x="450" y="173" width="50" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="475" y="187" class="lbl-sm">AGG_EN</text>
+  <rect x="505" y="173" width="55" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="532" y="187" class="lbl-sm">SeqNum</text>
+  <rect x="565" y="173" width="65" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="597" y="187" class="lbl-sm">TxPwrIdx</text>
+  <rect x="635" y="173" width="50" height="28" fill="#bbdefb" stroke="#1565c0" rx="3"/>
+  <text x="660" y="187" class="lbl-sm">Retry</text>
+  <rect x="690" y="173" width="98" height="28" fill="#e0e0e0" stroke="#9e9e9e" rx="3"/>
+  <text x="739" y="187" class="lbl-sm">Reserved / Pad</text>
+
+  <!-- ==================== RX PATH (bottom half) ==================== -->
+  <text x="30" y="250" class="sec-lbl">RX PATH (Air → Host)</text>
+
+  <!-- RX Step 1: Hardware -->
+  <rect x="688" y="265" width="110" height="50" class="box box-hw"/>
+  <text x="743" y="283" class="lbl">RTL8814AU</text>
+  <text x="743" y="298" class="lbl-sm">Air → RF → BB</text>
+  <text x="743" y="310" class="lbl-sm">→ MAC → DMA</text>
+
+  <line x1="686" y1="290" x2="661" y2="290" class="arrow-rx"/>
+
+  <!-- RX Step 2: USB bulk in -->
+  <rect x="531" y="265" width="130" height="50" class="box box-usb"/>
+  <text x="596" y="280" class="lbl">USB Bulk IN</text>
+  <text x="596" y="295" class="lbl-sm">1 bulk IN pipe</text>
+  <text x="596" y="308" class="lbl-code">queue_bulk() callback</text>
+
+  <line x1="529" y1="290" x2="504" y2="290" class="arrow-rx"/>
+
+  <!-- RX Step 3: De-aggregate -->
+  <rect x="374" y="265" width="130" height="50" class="box box-rx"/>
+  <text x="439" y="280" class="lbl">De-aggregate</text>
+  <text x="439" y="295" class="lbl-sm">Split USB transfer</text>
+  <text x="439" y="308" class="lbl-sm">into individual frames</text>
+
+  <line x1="372" y1="290" x2="347" y2="290" class="arrow-rx"/>
+
+  <!-- RX Step 4: Parse descriptor -->
+  <rect x="197" y="265" width="150" height="50" class="box box-rx"/>
+  <text x="272" y="280" class="lbl">Parse RX Descriptor</text>
+  <text x="272" y="295" class="lbl-sm">24-byte RX desc header</text>
+  <text x="272" y="308" class="lbl-code">RSSI, rate, length, CRC</text>
+
+  <line x1="195" y1="290" x2="170" y2="290" class="arrow-rx"/>
+
+  <!-- RX Step 5: Network stack -->
+  <rect x="30" y="265" width="140" height="50" class="box box-rx"/>
+  <text x="100" y="283" class="lbl">Network Stack</text>
+  <text x="100" y="298" class="lbl-sm">net_buffer into</text>
+  <text x="100" y="310" class="lbl-sm">receive queue</text>
+
+  <!-- RX descriptor detail -->
+  <rect x="30" y="335" width="768" height="65" fill="#f8f9fa" stroke="#dee2e6" rx="4"/>
+  <text x="40" y="352" class="lbl" text-anchor="start">RX Descriptor Format (24 bytes):</text>
+
+  <rect x="40" y="363" width="60" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="70" y="377" class="lbl-sm">PKT_LEN</text>
+  <rect x="105" y="363" width="40" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="125" y="377" class="lbl-sm">CRC</text>
+  <rect x="150" y="363" width="55" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="177" y="377" class="lbl-sm">DrvInfo</text>
+  <rect x="210" y="363" width="50" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="235" y="377" class="lbl-sm">Shift</text>
+  <rect x="265" y="363" width="60" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="295" y="377" class="lbl-sm">PHYStat</text>
+  <rect x="330" y="363" width="55" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="357" y="377" class="lbl-sm">MACID</text>
+  <rect x="390" y="363" width="55" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="417" y="377" class="lbl-sm">SecType</text>
+  <rect x="450" y="363" width="45" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="472" y="377" class="lbl-sm">BW</text>
+  <rect x="500" y="363" width="60" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="530" y="377" class="lbl-sm">RxRate</text>
+  <rect x="565" y="363" width="70" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="600" y="377" class="lbl-sm">RSSI A-D</text>
+  <rect x="640" y="363" width="60" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="670" y="377" class="lbl-sm">SeqNum</text>
+  <rect x="705" y="363" width="83" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="3"/>
+  <text x="746" y="377" class="lbl-sm">FragNum</text>
+
+  <!-- USB endpoint layout -->
+  <text x="30" y="435" class="sec-lbl">USB ENDPOINT LAYOUT</text>
+
+  <rect x="30" y="450" width="768" height="78" fill="#f3e5f5" stroke="#7b1fa2" rx="6" fill-opacity="0.3"/>
+
+  <rect x="50" y="460" width="140" height="28" fill="#e1bee7" stroke="#7b1fa2" rx="4"/>
+  <text x="120" y="474" class="lbl">Bulk OUT #1</text>
+  <rect x="50" y="492" width="140" height="28" fill="#f8f9fa" stroke="#9e9e9e" rx="4"/>
+  <text x="120" y="506" class="lbl-sm">VO / VI (high priority)</text>
+
+  <rect x="210" y="460" width="140" height="28" fill="#e1bee7" stroke="#7b1fa2" rx="4"/>
+  <text x="280" y="474" class="lbl">Bulk OUT #2</text>
+  <rect x="210" y="492" width="140" height="28" fill="#f8f9fa" stroke="#9e9e9e" rx="4"/>
+  <text x="280" y="506" class="lbl-sm">BE / BK (normal)</text>
+
+  <rect x="370" y="460" width="140" height="28" fill="#e1bee7" stroke="#7b1fa2" rx="4"/>
+  <text x="440" y="474" class="lbl">Bulk OUT #3</text>
+  <rect x="370" y="492" width="140" height="28" fill="#f8f9fa" stroke="#9e9e9e" rx="4"/>
+  <text x="440" y="506" class="lbl-sm">MGT / CMD / BCN</text>
+
+  <rect x="530" y="460" width="130" height="28" fill="#c8e6c9" stroke="#2e7d32" rx="4"/>
+  <text x="595" y="474" class="lbl">Bulk IN</text>
+  <rect x="530" y="492" width="130" height="28" fill="#f8f9fa" stroke="#9e9e9e" rx="4"/>
+  <text x="595" y="506" class="lbl-sm">RX data + status</text>
+
+  <rect x="680" y="460" width="100" height="28" fill="#fff3e0" stroke="#e65100" rx="4"/>
+  <text x="730" y="474" class="lbl">Interrupt IN</text>
+  <rect x="680" y="492" width="100" height="28" fill="#f8f9fa" stroke="#9e9e9e" rx="4"/>
+  <text x="730" y="506" class="lbl-sm">C2H events</text>
+</svg>

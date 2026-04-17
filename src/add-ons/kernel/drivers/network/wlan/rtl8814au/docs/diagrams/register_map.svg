@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 750" font-family="Noto Sans, Inter, sans-serif">
+  <defs>
+    <style>
+      .title { font-size: 16px; fill: #1a1a2e; font-weight: 700; text-anchor: middle; }
+      .addr { font-size: 11px; fill: #1565c0; font-family: monospace; font-weight: 600; dominant-baseline: central; }
+      .blk-lbl { font-size: 11px; fill: #212529; font-weight: 600; dominant-baseline: central; }
+      .blk-desc { font-size: 9.5px; fill: #6c757d; dominant-baseline: central; }
+      .region { stroke-width: 1.5; rx: 3; }
+      .note { font-size: 10px; fill: #6c757d; font-style: italic; }
+      .col-hdr { font-size: 11px; fill: #fff; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+    </style>
+  </defs>
+
+  <text x="410" y="28" class="title">RTL8814AU Register Map Overview</text>
+  <text x="410" y="44" class="note" text-anchor="middle">Accessed via USB vendor control transfers (rtw_read8/16/32, rtw_write8/16/32)</text>
+
+  <!-- Column headers -->
+  <rect x="30" y="60" width="90" height="24" fill="#1a1a2e" rx="3"/>
+  <text x="75" y="72" class="col-hdr">Address</text>
+  <rect x="120" y="60" width="280" height="24" fill="#1a1a2e" rx="3"/>
+  <text x="260" y="72" class="col-hdr">Register Block</text>
+  <rect x="400" y="60" width="390" height="24" fill="#1a1a2e" rx="3"/>
+  <text x="595" y="72" class="col-hdr">Key Registers &amp; Purpose</text>
+
+  <!-- Row 1: System Config -->
+  <rect x="30" y="90" width="90" height="52" fill="#e3f2fd" class="region" stroke="#1565c0"/>
+  <text x="40" y="110" class="addr">0x0000</text>
+  <text x="40" y="126" class="addr">0x00FF</text>
+
+  <rect x="120" y="90" width="280" height="52" fill="#e3f2fd" class="region" stroke="#1565c0"/>
+  <text x="130" y="108" class="blk-lbl">System Configuration</text>
+  <text x="130" y="122" class="blk-desc">Power control, clock, GPIO, RF control,</text>
+  <text x="130" y="134" class="blk-desc">AFE (analog front-end), interrupt masks</text>
+
+  <rect x="400" y="90" width="390" height="52" fill="#f8f9fa" class="region" stroke="#dee2e6"/>
+  <text x="410" y="106" class="blk-desc">REG_SYS_FUNC_EN — enable/disable MCU, MAC, BB</text>
+  <text x="410" y="120" class="blk-desc">REG_AFE_CTRL — analog front-end PLL/crystal</text>
+  <text x="410" y="134" class="blk-desc">HIMR0/HISR0, HIMR1/HISR1 — interrupt mask/status</text>
+
+  <!-- Row 2: MACTOP -->
+  <rect x="30" y="148" width="90" height="52" fill="#e8f5e9" class="region" stroke="#2e7d32"/>
+  <text x="40" y="168" class="addr">0x0100</text>
+  <text x="40" y="184" class="addr">0x01FF</text>
+
+  <rect x="120" y="148" width="280" height="52" fill="#e8f5e9" class="region" stroke="#2e7d32"/>
+  <text x="130" y="166" class="blk-lbl">MACTOP General Config</text>
+  <text x="130" y="180" class="blk-desc">Command register, packet buffer, DMA control,</text>
+  <text x="130" y="192" class="blk-desc">firmware interface, H2C mailboxes (0-3 + EXT)</text>
+
+  <rect x="400" y="148" width="390" height="52" fill="#f8f9fa" class="region" stroke="#dee2e6"/>
+  <text x="410" y="164" class="blk-desc">REG_8051FW_CTRL — firmware download control</text>
+  <text x="410" y="178" class="blk-desc">HMEBOX_0..3 + EXT — H2C command mailboxes (7B each)</text>
+  <text x="410" y="192" class="blk-desc">REG_MCUFWDL — MCU firmware download status</text>
+
+  <!-- Row 3: TXDMA -->
+  <rect x="30" y="206" width="90" height="45" fill="#fff3e0" class="region" stroke="#e65100"/>
+  <text x="40" y="224" class="addr">0x0200</text>
+  <text x="40" y="238" class="addr">0x027F</text>
+
+  <rect x="120" y="206" width="280" height="45" fill="#fff3e0" class="region" stroke="#e65100"/>
+  <text x="130" y="222" class="blk-lbl">TX DMA Engine</text>
+  <text x="130" y="236" class="blk-desc">FIFO page control, queue pointers (TQPNT1-4)</text>
+
+  <rect x="400" y="206" width="390" height="45" fill="#f8f9fa" class="region" stroke="#dee2e6"/>
+  <text x="410" y="222" class="blk-desc">TX buffer: 2048 pages × 128 bytes = 256 KB</text>
+  <text x="410" y="236" class="blk-desc">8 priority queues (VO/VI/BE/BK/BCN/MGT/HIGH/CMD)</text>
+
+  <!-- Row 4: RXDMA -->
+  <rect x="30" y="257" width="90" height="38" fill="#fff3e0" class="region" stroke="#e65100"/>
+  <text x="40" y="278" class="addr">0x0280</text>
+
+  <rect x="120" y="257" width="280" height="38" fill="#fff3e0" class="region" stroke="#e65100"/>
+  <text x="130" y="272" class="blk-lbl">RX DMA Engine</text>
+  <text x="130" y="286" class="blk-desc">Aggregation thresholds, packet counts</text>
+
+  <rect x="400" y="257" width="390" height="38" fill="#f8f9fa" class="region" stroke="#dee2e6"/>
+  <text x="410" y="272" class="blk-desc">RX buffer: ~23 KB (0x5C00)</text>
+  <text x="410" y="286" class="blk-desc">USB bulk IN aggregation control</text>
+
+  <!-- Row 5: Protocol -->
+  <rect x="30" y="301" width="90" height="52" fill="#f3e5f5" class="region" stroke="#7b1fa2"/>
+  <text x="40" y="321" class="addr">0x0400</text>
+  <text x="40" y="337" class="addr">0x047F</text>
+
+  <rect x="120" y="301" width="280" height="52" fill="#f3e5f5" class="region" stroke="#7b1fa2"/>
+  <text x="130" y="319" class="blk-lbl">Protocol Engine</text>
+  <text x="130" y="333" class="blk-desc">Queue info, TX control, rate adaptation</text>
+  <text x="130" y="345" class="blk-desc">(ARFR0-5), AMPDU settings</text>
+
+  <rect x="400" y="301" width="390" height="52" fill="#f8f9fa" class="region" stroke="#dee2e6"/>
+  <text x="410" y="317" class="blk-desc">ARFR0-5 — auto rate fallback register sets</text>
+  <text x="410" y="331" class="blk-desc">128 MACID entries for station tracking</text>
+  <text x="410" y="345" class="blk-desc">AMPDU max: time=0x70, size=128 KB</text>
+
+  <!-- Row 6: EDCA -->
+  <rect x="30" y="359" width="90" height="52" fill="#fce4ec" class="region" stroke="#c62828"/>
+  <text x="40" y="379" class="addr">0x0500</text>
+  <text x="40" y="395" class="addr">0x05FF</text>
+
+  <rect x="120" y="359" width="280" height="52" fill="#fce4ec" class="region" stroke="#c62828"/>
+  <text x="130" y="377" class="blk-lbl">EDCA / Timing</text>
+  <text x="130" y="391" class="blk-desc">WMM queue parameters, beacon control,</text>
+  <text x="130" y="403" class="blk-desc">TSF/TBTT timers, NAV</text>
+
+  <rect x="400" y="359" width="390" height="52" fill="#f8f9fa" class="region" stroke="#dee2e6"/>
+  <text x="410" y="375" class="blk-desc">WMM AC_VO/VI/BE/BK EDCA parameters</text>
+  <text x="410" y="389" class="blk-desc">Beacon interval, DTIM period</text>
+  <text x="410" y="403" class="blk-desc">TSF timer (64-bit), TBTT interrupt</text>
+
+  <!-- Row 7: WMAC -->
+  <rect x="30" y="417" width="90" height="52" fill="#e0f2f1" class="region" stroke="#00695c"/>
+  <text x="40" y="437" class="addr">0x0600</text>
+  <text x="40" y="453" class="addr">0x07FF</text>
+
+  <rect x="120" y="417" width="280" height="52" fill="#e0f2f1" class="region" stroke="#00695c"/>
+  <text x="130" y="435" class="blk-lbl">Wireless MAC</text>
+  <text x="130" y="449" class="blk-desc">MAC control, security CAM, power mgmt,</text>
+  <text x="130" y="461" class="blk-desc">5 BSSID ports, frame filtering</text>
+
+  <rect x="400" y="417" width="390" height="52" fill="#f8f9fa" class="region" stroke="#dee2e6"/>
+  <text x="410" y="433" class="blk-desc">64 Security CAM entries (HW encryption keys)</text>
+  <text x="410" y="447" class="blk-desc">RX filter: beacon, probe, data, mgmt masks</text>
+  <text x="410" y="461" class="blk-desc">Multi-BSSID: 5 independent port MAC addresses</text>
+
+  <!-- Row 8: BB Path A-D -->
+  <rect x="30" y="485" width="90" height="80" fill="#fff8e1" class="region" stroke="#f9a825"/>
+  <text x="40" y="505" class="addr">0x2800</text>
+  <text x="40" y="519" class="addr">0x2C00</text>
+  <text x="40" y="533" class="addr">0x3800</text>
+  <text x="40" y="547" class="addr">0x3C00</text>
+
+  <rect x="120" y="485" width="280" height="80" fill="#fff8e1" class="region" stroke="#f9a825"/>
+  <text x="130" y="505" class="blk-lbl">Baseband Registers — 4 RF Paths</text>
+  <text x="130" y="521" class="blk-desc">Path A: 0x2800   Path B: 0x2C00</text>
+  <text x="130" y="535" class="blk-desc">Path C: 0x3800   Path D: 0x3C00</text>
+  <text x="130" y="549" class="blk-desc">Per-path PHY config, gain, IQ calibration</text>
+
+  <rect x="400" y="485" width="390" height="80" fill="#f8f9fa" class="region" stroke="#dee2e6"/>
+  <text x="410" y="503" class="blk-desc">AGC table — automatic gain control per path</text>
+  <text x="410" y="517" class="blk-desc">IQ calibration coefficients (TX IQ, RX IQ)</text>
+  <text x="410" y="531" class="blk-desc">TX power index per path per channel</text>
+  <text x="410" y="545" class="blk-desc">OFDM/CCK signal quality, RSSI, noise floor</text>
+  <text x="410" y="559" class="blk-desc">4×4 MIMO: all paths calibrated independently</text>
+
+  <!-- Memory map summary -->
+  <rect x="30" y="585" width="760" height="65" fill="#f8f9fa" stroke="#dee2e6" rx="6"/>
+  <text x="40" y="603" class="blk-lbl">Hardware Resource Summary</text>
+  <text x="40" y="620" class="blk-desc">TX Buffer: 2048 pages × 128 B = 256 KB          RX Buffer: ~23 KB          EFUSE: 1024 B (2 banks)</text>
+  <text x="40" y="636" class="blk-desc">MACID Table: 128 entries          Security CAM: 64 entries          H2C Mailboxes: 4 × 7 B          BSSID Ports: 5</text>
+
+  <!-- Footer -->
+  <text x="410" y="675" class="note" text-anchor="middle">Register addresses derived from include/rtl8814a_spec.h in the reference driver (ulli-kroll/rtl8814au)</text>
+  <text x="410" y="690" class="note" text-anchor="middle">All register I/O goes through USB vendor control transfers — no memory-mapped I/O on USB devices</text>
+</svg>
