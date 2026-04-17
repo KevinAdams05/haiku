@@ -7,4 +7,8 @@ KevinAdams05/haiku/RadeonDriverFix -> a fix for the radeon_hd driver — [Phase 
 
 KevinAdams05/haiku/rtl8814au-wifi-driver -> native USB WiFi driver for RTL8814AU (4T4R 802.11ac)
 
-KevinAdams05/haiku/KevinMain -> where I will merge all my fixes. This acts as my current build.
+
+**KevinAdams05/haiku/KevinMain -> where I will merge all my fixes. This acts as my current build.**
+
+This branch also contains:
+* NFSMount, a GUI utility to mount NFS shares. Once it's tested more I'll move it to it's own repo. Feel free to send PRs or log issues.
