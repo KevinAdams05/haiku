@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 420" font-family="Segoe UI, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+    <linearGradient id="hdr" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8e44ad"/>
+      <stop offset="100%" stop-color="#6c3483"/>
+    </linearGradient>
+    <filter id="sh" x="-2%" y="-5%" width="104%" height="110%">
+      <feDropShadow dx="1" dy="1" stdDeviation="2" flood-color="#00000025"/>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="850" height="40" fill="url(#hdr)" rx="5"/>
+  <text x="425" y="27" text-anchor="middle" fill="white" font-size="16" font-weight="bold">Spread Spectrum Constant Bug — display_crtc_ss() V2 Path</text>
+
+  <!-- V3 Path (correct) -->
+  <rect x="30" y="60" width="370" height="180" rx="8" fill="#eafaf1" stroke="#27ae60" stroke-width="2" filter="url(#sh)"/>
+  <rect x="30" y="60" width="370" height="30" rx="8" fill="#27ae60"/>
+  <rect x="30" y="80" width="370" height="10" fill="#27ae60"/>
+  <text x="215" y="80" text-anchor="middle" fill="white" font-weight="bold" font-size="14">V3 Path (DCE 5+) — Correct</text>
+
+  <text x="50" y="115" font-family="Consolas, monospace" font-size="12" fill="#1e8449">ATOM_PPLL_SS_TYPE_V3_P1PLL = 0x00</text>
+  <text x="50" y="135" font-family="Consolas, monospace" font-size="12" fill="#1e8449">ATOM_PPLL_SS_TYPE_V3_P2PLL = 0x04</text>
+  <text x="50" y="155" font-family="Consolas, monospace" font-size="12" fill="#1e8449">ATOM_PPLL_SS_TYPE_V3_DCPLL = 0x08</text>
+
+  <text x="50" y="180" font-size="11" fill="#555">All V3 constants used ✓</text>
+  <text x="50" y="195" font-size="11" fill="#555">Matches ENABLE_SPREAD_SPECTRUM_ON_PPLL_V3</text>
+  <text x="50" y="215" font-size="11" fill="#555">Used on: Northern Islands (Caicos, Turks, Barts, Cayman)</text>
+  <text x="50" y="230" font-size="11" fill="#555">DCE 5.0 hardware</text>
+
+  <!-- V2 Path (was buggy) -->
+  <rect x="440" y="60" width="380" height="180" rx="8" fill="#fdedec" stroke="#e74c3c" stroke-width="2" filter="url(#sh)"/>
+  <rect x="440" y="60" width="380" height="30" rx="8" fill="#e74c3c"/>
+  <rect x="440" y="80" width="380" height="10" fill="#e74c3c"/>
+  <text x="630" y="80" text-anchor="middle" fill="white" font-weight="bold" font-size="14">V2 Path (DCE 4.x) — Was Buggy</text>
+
+  <text x="460" y="115" font-family="Consolas, monospace" font-size="12" fill="#1e8449">ATOM_PPLL_SS_TYPE_V2_P1PLL = 0x00 ✓</text>
+  <text x="460" y="135" font-family="Consolas, monospace" font-size="12" fill="#e74c3c">ATOM_PPLL_SS_TYPE_V3_P2PLL = 0x04 ✗</text>
+  <text x="460" y="155" font-family="Consolas, monospace" font-size="12" fill="#e74c3c">ATOM_PPLL_SS_TYPE_V3_DCPLL = 0x08 ✗</text>
+
+  <text x="460" y="180" font-size="11" fill="#922b21">P1PLL used V2 constant, but P2PLL and</text>
+  <text x="460" y="195" font-size="11" fill="#922b21">DCPLL incorrectly used V3 constants!</text>
+  <text x="460" y="215" font-size="11" fill="#555">Affected: Evergreen (Cedar, Redwood, Juniper, Cypress)</text>
+  <text x="460" y="230" font-size="11" fill="#555">DCE 4.0 hardware</text>
+
+  <!-- Arrow between them -->
+  <line x1="400" y1="150" x2="440" y2="150" stroke="#555" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+  <!-- Fix box -->
+  <rect x="440" y="260" width="380" height="70" rx="8" fill="#eafaf1" stroke="#27ae60" stroke-width="2" filter="url(#sh)"/>
+  <text x="630" y="285" text-anchor="middle" font-weight="bold" font-size="14" fill="#1e8449">Fix Applied</text>
+  <text x="460" y="305" font-family="Consolas, monospace" font-size="12" fill="#1e8449">P2PLL → ATOM_PPLL_SS_TYPE_V2_P2PLL</text>
+  <text x="460" y="322" font-family="Consolas, monospace" font-size="12" fill="#1e8449">DCPLL → ATOM_PPLL_SS_TYPE_V2_DCPLL</text>
+
+  <!-- Explanation -->
+  <rect x="30" y="260" width="370" height="140" rx="8" fill="#fef9e7" stroke="#f0ad4e" stroke-width="1" filter="url(#sh)"/>
+  <text x="215" y="285" text-anchor="middle" font-weight="bold" font-size="13" fill="#7d6608">Impact on Display Quality</text>
+  <text x="50" y="308" font-size="11" fill="#7d6608">Spread spectrum modulates the pixel clock to reduce</text>
+  <text x="50" y="323" font-size="11" fill="#7d6608">electromagnetic interference (EMI). When the wrong</text>
+  <text x="50" y="338" font-size="11" fill="#7d6608">PLL selector constant is used, the firmware may apply</text>
+  <text x="50" y="353" font-size="11" fill="#7d6608">modulation to the wrong clock source, causing signal</text>
+  <text x="50" y="368" font-size="11" fill="#7d6608">jitter that appears as "hash" or "noise" on screen.</text>
+  <text x="50" y="388" font-size="11" fill="#7d6608">Related bugs: #8339, #8154 (display hash/garbling)</text>
+</svg>

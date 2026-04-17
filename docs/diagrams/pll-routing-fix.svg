@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 550" font-family="Segoe UI, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+    <linearGradient id="h" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#16a085"/>
+      <stop offset="100%" stop-color="#0e6655"/>
+    </linearGradient>
+    <filter id="s" x="-2%" y="-3%" width="104%" height="106%">
+      <feDropShadow dx="1" dy="1" stdDeviation="2" flood-color="#00000025"/>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="900" height="40" fill="url(#h)" rx="5"/>
+  <text x="450" y="27" text-anchor="middle" fill="white" font-size="16" font-weight="bold">PLL Clock Routing and Selection Fixes (pll.cpp)</text>
+
+  <!-- pll_external_init routing -->
+  <rect x="30" y="60" width="410" height="250" rx="8" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1" filter="url(#s)"/>
+  <text x="235" y="85" text-anchor="middle" font-weight="bold" font-size="14" fill="#2c3e50">pll_external_init() Routing</text>
+
+  <!-- Before -->
+  <rect x="50" y="100" width="170" height="190" rx="6" fill="#fdedec" stroke="#e74c3c" stroke-width="1"/>
+  <text x="135" y="120" text-anchor="middle" font-weight="bold" font-size="12" fill="#c0392b">Before (Buggy)</text>
+  <text x="60" y="140" font-size="10" fill="#555">dceMajor &gt;= 12:</text>
+  <text x="70" y="153" font-size="10" fill="#3498db">→ pll_set_dce()</text>
+  <text x="60" y="173" font-size="10" fill="#555">dceMajor &gt;= 6:</text>
+  <text x="70" y="186" font-size="10" fill="#e74c3c">→ pll_set_external()</text>
+  <text x="70" y="199" font-size="9" fill="#e74c3c">Polaris (DCE 11.2)</text>
+  <text x="70" y="210" font-size="9" fill="#e74c3c">hits this path but v1.7</text>
+  <text x="70" y="221" font-size="9" fill="#e74c3c">table not supported!</text>
+  <text x="60" y="241" font-size="10" fill="#555">dceMajor &gt;= 4:</text>
+  <text x="70" y="254" font-size="10" fill="#555">→ pll_set_external() + SS</text>
+  <text x="60" y="274" font-size="10" fill="#555">else: (nothing)</text>
+
+  <!-- After -->
+  <rect x="250" y="100" width="170" height="190" rx="6" fill="#eafaf1" stroke="#27ae60" stroke-width="1"/>
+  <text x="335" y="120" text-anchor="middle" font-weight="bold" font-size="12" fill="#1e8449">After (Fixed)</text>
+  <text x="260" y="140" font-size="10" fill="#555">dceVersion &gt;= 1102:</text>
+  <text x="270" y="153" font-size="10" fill="#27ae60">→ pll_set_dce()</text>
+  <text x="270" y="166" font-size="9" fill="#27ae60">Polaris now correctly</text>
+  <text x="270" y="177" font-size="9" fill="#27ae60">routed here!</text>
+  <text x="260" y="197" font-size="10" fill="#555">dceMajor &gt;= 6:</text>
+  <text x="270" y="210" font-size="10" fill="#555">→ pll_set_external()</text>
+  <text x="260" y="230" font-size="10" fill="#555">dceMajor &gt;= 4:</text>
+  <text x="270" y="243" font-size="10" fill="#555">→ pll_set_external() + SS</text>
+  <text x="260" y="263" font-size="10" fill="#555">else: (nothing)</text>
+  <text x="260" y="283" font-size="9" fill="#868e96">+ v7 fallback in set_external</text>
+
+  <!-- Arrow between -->
+  <text x="230" y="200" text-anchor="middle" font-size="20" fill="#555">→</text>
+
+  <!-- pll_pick fix -->
+  <rect x="470" y="60" width="410" height="250" rx="8" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1" filter="url(#s)"/>
+  <text x="675" y="85" text-anchor="middle" font-weight="bold" font-size="14" fill="#2c3e50">pll_pick() DCE 6.1 Fix</text>
+
+  <!-- Before pll_pick -->
+  <rect x="490" y="100" width="170" height="140" rx="6" fill="#fdedec" stroke="#e74c3c" stroke-width="1"/>
+  <text x="575" y="120" text-anchor="middle" font-weight="bold" font-size="12" fill="#c0392b">Before</text>
+  <text x="500" y="140" font-family="Consolas, monospace" font-size="9" fill="#555">if (encoder ==</text>
+  <text x="510" y="153" font-family="Consolas, monospace" font-size="9" fill="#555">INTERNAL_UNIPHY</text>
+  <text x="510" y="166" font-family="Consolas, monospace" font-size="9" fill="#555">&amp;&amp; !linkB) {</text>
+  <text x="520" y="179" font-family="Consolas, monospace" font-size="9" fill="#e74c3c">pll = PPLL2;</text>
+  <text x="510" y="192" font-family="Consolas, monospace" font-size="9" fill="#555">}</text>
+  <text x="500" y="215" font-size="9" fill="#e74c3c">No DCE version check!</text>
+  <text x="500" y="228" font-size="9" fill="#e74c3c">Forces PPLL2 on ALL cards</text>
+  <text x="500" y="241" font-size="9" fill="#e74c3c">with UNIPHY + linkA</text>
+
+  <!-- After pll_pick -->
+  <rect x="690" y="100" width="170" height="140" rx="6" fill="#eafaf1" stroke="#27ae60" stroke-width="1"/>
+  <text x="775" y="120" text-anchor="middle" font-weight="bold" font-size="12" fill="#1e8449">After</text>
+  <text x="700" y="140" font-family="Consolas, monospace" font-size="9" fill="#27ae60">if (dceVersion == 601</text>
+  <text x="710" y="153" font-family="Consolas, monospace" font-size="9" fill="#555">&amp;&amp; encoder ==</text>
+  <text x="710" y="166" font-family="Consolas, monospace" font-size="9" fill="#555">INTERNAL_UNIPHY</text>
+  <text x="710" y="179" font-family="Consolas, monospace" font-size="9" fill="#555">&amp;&amp; !linkB) {</text>
+  <text x="720" y="192" font-family="Consolas, monospace" font-size="9" fill="#555">pll = PPLL2;</text>
+  <text x="710" y="205" font-family="Consolas, monospace" font-size="9" fill="#555">}</text>
+  <text x="700" y="228" font-size="9" fill="#1e8449">Now only applies to</text>
+  <text x="700" y="241" font-size="9" fill="#1e8449">DCE 6.1 (Aruba) APU</text>
+
+  <!-- Arrow -->
+  <text x="670" y="175" text-anchor="middle" font-size="20" fill="#555">→</text>
+
+  <!-- DCE version table -->
+  <rect x="30" y="330" width="840" height="200" rx="8" fill="#f4f6f7" stroke="#bdc3c7" stroke-width="1" filter="url(#s)"/>
+  <text x="450" y="355" text-anchor="middle" font-weight="bold" font-size="14" fill="#2c3e50">DCE Version to Hardware Mapping</text>
+
+  <!-- Table headers -->
+  <rect x="50" y="370" width="150" height="25" fill="#2c3e50" rx="3"/>
+  <text x="125" y="387" text-anchor="middle" fill="white" font-weight="bold" font-size="11">DCE Version</text>
+  <rect x="200" y="370" width="180" height="25" fill="#2c3e50" rx="3"/>
+  <text x="290" y="387" text-anchor="middle" fill="white" font-weight="bold" font-size="11">Hardware</text>
+  <rect x="380" y="370" width="150" height="25" fill="#2c3e50" rx="3"/>
+  <text x="455" y="387" text-anchor="middle" fill="white" font-weight="bold" font-size="11">SetPixelClock</text>
+  <rect x="530" y="370" width="150" height="25" fill="#2c3e50" rx="3"/>
+  <text x="605" y="387" text-anchor="middle" fill="white" font-weight="bold" font-size="11">Clock Init Path</text>
+  <rect x="680" y="370" width="170" height="25" fill="#2c3e50" rx="3"/>
+  <text x="765" y="387" text-anchor="middle" fill="white" font-weight="bold" font-size="11">Status</text>
+
+  <!-- Row 1: DCE 4.0 -->
+  <text x="125" y="413" text-anchor="middle" font-size="11">4.0 (400)</text>
+  <text x="290" y="413" text-anchor="middle" font-size="11">Evergreen (Cedar+)</text>
+  <text x="455" y="413" text-anchor="middle" font-size="11">v1.3 / v1.5</text>
+  <text x="605" y="413" text-anchor="middle" font-size="11">pll_set_external</text>
+  <text x="765" y="413" text-anchor="middle" font-size="11" fill="#27ae60">Works</text>
+
+  <!-- Row 2: DCE 5.0 -->
+  <rect x="50" y="420" width="800" height="18" fill="#f0f0f0" rx="2"/>
+  <text x="125" y="434" text-anchor="middle" font-size="11">5.0 (500)</text>
+  <text x="290" y="434" text-anchor="middle" font-size="11">Northern Islands</text>
+  <text x="455" y="434" text-anchor="middle" font-size="11">v1.5</text>
+  <text x="605" y="434" text-anchor="middle" font-size="11">pll_set_external</text>
+  <text x="765" y="434" text-anchor="middle" font-size="11" fill="#27ae60">Works</text>
+
+  <!-- Row 3: DCE 6.0/6.1 -->
+  <text x="125" y="455" text-anchor="middle" font-size="11">6.0/6.1 (600/601)</text>
+  <text x="290" y="455" text-anchor="middle" font-size="11">SI (Tahiti/Aruba)</text>
+  <text x="455" y="455" text-anchor="middle" font-size="11">v1.6</text>
+  <text x="605" y="455" text-anchor="middle" font-size="11">pll_set_external</text>
+  <text x="765" y="455" text-anchor="middle" font-size="11" fill="#27ae60">Works</text>
+
+  <!-- Row 4: DCE 8.x -->
+  <rect x="50" y="462" width="800" height="18" fill="#f0f0f0" rx="2"/>
+  <text x="125" y="476" text-anchor="middle" font-size="11">8.x (800+)</text>
+  <text x="290" y="476" text-anchor="middle" font-size="11">CIK (Kaveri/Bonaire+)</text>
+  <text x="455" y="476" text-anchor="middle" font-size="11">v1.6</text>
+  <text x="605" y="476" text-anchor="middle" font-size="11">pll_set_external</text>
+  <text x="765" y="476" text-anchor="middle" font-size="11" fill="#27ae60">Works</text>
+
+  <!-- Row 5: DCE 11.2 (FIXED) -->
+  <text x="125" y="497" text-anchor="middle" font-size="11" font-weight="bold">11.2 (1102)</text>
+  <text x="290" y="497" text-anchor="middle" font-size="11" font-weight="bold">Polaris</text>
+  <text x="455" y="497" text-anchor="middle" font-size="11" font-weight="bold">v1.7</text>
+  <text x="605" y="497" text-anchor="middle" font-size="11" font-weight="bold" fill="#27ae60">pll_set_dce ✓</text>
+  <text x="765" y="497" text-anchor="middle" font-size="11" fill="#27ae60" font-weight="bold">Fixed!</text>
+
+  <!-- Row 6: DCE 12 -->
+  <rect x="50" y="504" width="800" height="18" fill="#f0f0f0" rx="2"/>
+  <text x="125" y="518" text-anchor="middle" font-size="11">12.0 (1200)</text>
+  <text x="290" y="518" text-anchor="middle" font-size="11">Vega</text>
+  <text x="455" y="518" text-anchor="middle" font-size="11">N/A (DCE Clock)</text>
+  <text x="605" y="518" text-anchor="middle" font-size="11">pll_set_dce</text>
+  <text x="765" y="518" text-anchor="middle" font-size="11" fill="#27ae60">Works</text>
+</svg>

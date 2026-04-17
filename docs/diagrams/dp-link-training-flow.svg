@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 750" font-family="Segoe UI, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+    <marker id="ag" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#27ae60"/>
+    </marker>
+    <marker id="ar" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#e74c3c"/>
+    </marker>
+    <linearGradient id="h" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2980b9"/>
+      <stop offset="100%" stop-color="#1a5276"/>
+    </linearGradient>
+    <filter id="s" x="-2%" y="-3%" width="104%" height="106%">
+      <feDropShadow dx="1" dy="1" stdDeviation="2" flood-color="#00000025"/>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="900" height="40" fill="url(#h)" rx="5"/>
+  <text x="450" y="27" text-anchor="middle" fill="white" font-size="16" font-weight="bold">DisplayPort Link Training Flow with Retry (displayport.cpp)</text>
+
+  <!-- Start -->
+  <ellipse cx="450" cy="75" rx="100" ry="20" fill="#ecf0f1" stroke="#95a5a6" stroke-width="1.5" filter="url(#s)"/>
+  <text x="450" y="80" text-anchor="middle" font-weight="bold">dp_link_train(crtcID)</text>
+  <line x1="450" y1="95" x2="450" y2="120" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Init box -->
+  <rect x="310" y="125" width="280" height="70" rx="6" fill="#d6eaf8" stroke="#2980b9" stroke-width="1" filter="url(#s)"/>
+  <text x="450" y="145" text-anchor="middle" font-weight="bold" font-size="12" fill="#1a5276">Initialization</text>
+  <text x="320" y="162" font-size="10" fill="#2c3e50">1. Read DPCD revision &amp; training interval</text>
+  <text x="320" y="175" font-size="10" fill="#2c3e50">2. Power up sink (D0 via DPCD 0x600)</text>
+  <text x="320" y="188" font-size="10" fill="#2c3e50">3. Configure downspread &amp; enhanced framing</text>
+  <line x1="450" y1="195" x2="450" y2="220" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- Retry Loop Box -->
+  <rect x="100" y="225" width="700" height="340" rx="10" fill="#f8f9fa" stroke="#adb5bd" stroke-width="1.5" stroke-dasharray="8,4"/>
+  <text x="120" y="248" font-weight="bold" font-size="14" fill="#495057">Link Training Retry Loop</text>
+  <text x="120" y="263" font-size="10" fill="#868e96">(NEW — previously no retry on failure)</text>
+
+  <!-- Attempt box -->
+  <rect x="310" y="275" width="280" height="35" rx="6" fill="#3498db" filter="url(#s)"/>
+  <text x="450" y="297" text-anchor="middle" fill="white" font-weight="bold" font-size="12">dp_link_train_attempt()</text>
+  <line x1="450" y1="310" x2="450" y2="335" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- CR Phase -->
+  <rect x="340" y="340" width="220" height="35" rx="6" fill="#f39c12" filter="url(#s)"/>
+  <text x="450" y="363" text-anchor="middle" fill="white" font-weight="bold" font-size="12">Phase 1: Clock Recovery</text>
+  <line x1="450" y1="375" x2="450" y2="395" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- CR Decision -->
+  <polygon points="450,395 530,420 450,445 370,420" fill="#fff3cd" stroke="#f0ad4e" stroke-width="1" filter="url(#s)"/>
+  <text x="450" y="424" text-anchor="middle" font-size="11" font-weight="bold">CR OK?</text>
+
+  <!-- CR Fail -->
+  <line x1="370" y1="420" x2="240" y2="420" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="310" y="413" text-anchor="middle" fill="#e74c3c" font-weight="bold" font-size="10">FAIL</text>
+
+  <!-- CR OK -->
+  <line x1="530" y1="420" x2="590" y2="420" stroke="#27ae60" stroke-width="1.5"/>
+  <text x="555" y="413" text-anchor="middle" fill="#27ae60" font-weight="bold" font-size="10">OK</text>
+
+  <!-- CE Phase -->
+  <rect x="590" y="403" width="180" height="35" rx="6" fill="#e67e22" filter="url(#s)"/>
+  <text x="680" y="425" text-anchor="middle" fill="white" font-weight="bold" font-size="12">Phase 2: Equalization</text>
+  <line x1="680" y1="438" x2="680" y2="458" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <!-- CE Decision -->
+  <polygon points="680,458 750,480 680,502 610,480" fill="#fff3cd" stroke="#f0ad4e" stroke-width="1" filter="url(#s)"/>
+  <text x="680" y="484" text-anchor="middle" font-size="11" font-weight="bold">CE OK?</text>
+
+  <!-- CE Fail -->
+  <line x1="610" y1="480" x2="240" y2="480" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="430" y="473" text-anchor="middle" fill="#e74c3c" font-weight="bold" font-size="10">FAIL</text>
+
+  <!-- CE OK — Success -->
+  <line x1="750" y1="480" x2="830" y2="480" stroke="#27ae60" stroke-width="1.5" marker-end="url(#ag)"/>
+  <text x="785" y="473" text-anchor="middle" fill="#27ae60" font-weight="bold" font-size="10">OK</text>
+  <ellipse cx="830" cy="520" rx="55" ry="18" fill="#eafaf1" stroke="#27ae60" stroke-width="1.5"/>
+  <text x="830" y="524" text-anchor="middle" fill="#1e8449" font-weight="bold" font-size="11">SUCCESS</text>
+  <line x1="830" y1="480" x2="830" y2="502" stroke="#27ae60" stroke-width="1.5" marker-end="url(#ag)"/>
+
+  <!-- Reduce link rate -->
+  <rect x="130" y="440" width="110" height="80" rx="6" fill="#fdedec" stroke="#e74c3c" stroke-width="1" filter="url(#s)"/>
+  <text x="185" y="458" text-anchor="middle" font-weight="bold" font-size="11" fill="#c0392b">Reduce</text>
+  <text x="185" y="472" text-anchor="middle" font-weight="bold" font-size="11" fill="#c0392b">Link Rate</text>
+  <text x="185" y="492" text-anchor="middle" font-size="10" fill="#922b21">540→270</text>
+  <text x="185" y="506" text-anchor="middle" font-size="10" fill="#922b21">270→162</text>
+
+  <!-- Can reduce? -->
+  <line x1="185" y1="520" x2="185" y2="540" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <polygon points="185,540 245,557 185,574 125,557" fill="#fff3cd" stroke="#f0ad4e" stroke-width="1"/>
+  <text x="185" y="561" text-anchor="middle" font-size="10" font-weight="bold">Reduced?</text>
+
+  <!-- Can reduce YES — retry -->
+  <line x1="245" y1="557" x2="380" y2="557" stroke="#555" stroke-width="1"/>
+  <line x1="380" y1="557" x2="380" y2="290" stroke="#555" stroke-width="1"/>
+  <line x1="380" y1="290" x2="310" y2="290" stroke="#555" stroke-width="1"/>
+  <line x1="310" y1="290" x2="320" y2="290" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="310" y="552" fill="#27ae60" font-weight="bold" font-size="10">YES</text>
+
+  <!-- Can't reduce — fail -->
+  <line x1="125" y1="557" x2="80" y2="557" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="110" y="550" fill="#e74c3c" font-weight="bold" font-size="10">NO</text>
+  <ellipse cx="50" cy="557" rx="45" ry="18" fill="#fdedec" stroke="#e74c3c" stroke-width="1.5"/>
+  <text x="50" y="561" text-anchor="middle" fill="#c0392b" font-weight="bold" font-size="11">FAIL</text>
+
+  <!-- Finish box -->
+  <rect x="250" y="600" width="400" height="60" rx="6" fill="#d5f5e3" stroke="#27ae60" stroke-width="1" filter="url(#s)"/>
+  <text x="450" y="620" text-anchor="middle" font-weight="bold" font-size="12" fill="#1e8449">Training Complete</text>
+  <text x="260" y="638" font-size="10" fill="#2c3e50">Disable training patterns on source and sink</text>
+  <text x="260" y="650" font-size="10" fill="#2c3e50">Log if training succeeded at reduced rate vs original</text>
+
+  <!-- Link rate legend -->
+  <rect x="30" y="685" width="840" height="50" rx="6" fill="#f4f6f7" stroke="#bdc3c7" stroke-width="1"/>
+  <text x="50" y="705" font-weight="bold" font-size="12" fill="#2c3e50">DP Link Rates:</text>
+  <rect x="180" y="695" width="15" height="12" fill="#27ae60" rx="2"/>
+  <text x="200" y="706" font-size="11" fill="#555">HBR2: 5.4 Gbps (DP 1.2, requires DCE 5+ &amp; HBR2 cap)</text>
+  <rect x="520" y="695" width="15" height="12" fill="#3498db" rx="2"/>
+  <text x="540" y="706" font-size="11" fill="#555">HBR: 2.7 Gbps (DP 1.0+)</text>
+  <rect x="690" y="695" width="15" height="12" fill="#f39c12" rx="2"/>
+  <text x="710" y="706" font-size="11" fill="#555">RBR: 1.62 Gbps (minimum)</text>
+  <text x="50" y="726" font-size="10" fill="#868e96">Previously: No retry on failure, link training result ignored. Now: Proper fallback chain with error propagation.</text>
+</svg>

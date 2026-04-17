@@ -465,18 +465,15 @@ display_get_encoder_mode(uint32 connectorIndex)
 	switch (gConnector[connectorIndex]->type) {
 		case VIDEO_CONNECTOR_DVII:
 		case VIDEO_CONNECTOR_HDMIB: /* HDMI-B is DL-DVI; analog works fine */
-			// TODO: if audio detected on edid and DCE4, ATOM_ENCODER_MODE_DVI
-			//        if audio detected on edid not DCE4, ATOM_ENCODER_MODE_HDMI
 			if (edidDigital)
 				return ATOM_ENCODER_MODE_DVI;
 			else
 				return ATOM_ENCODER_MODE_CRT;
 			break;
-		case VIDEO_CONNECTOR_DVID:
 		case VIDEO_CONNECTOR_HDMIA:
+			return ATOM_ENCODER_MODE_HDMI;
+		case VIDEO_CONNECTOR_DVID:
 		default:
-			// TODO: if audio detected on edid and DCE4, ATOM_ENCODER_MODE_DVI
-			//        if audio detected on edid not DCE4, ATOM_ENCODER_MODE_HDMI
 			return ATOM_ENCODER_MODE_DVI;
 		case VIDEO_CONNECTOR_LVDS:
 			return ATOM_ENCODER_MODE_LVDS;
@@ -1058,15 +1055,23 @@ display_crtc_ss(pll_info* pll, int command)
 			= B_HOST_TO_LENDIAN_INT16(pll->ssPercentage);
 		args.v2.ucSpreadSpectrumType
 			= pll->ssType & ATOM_SS_CENTRE_SPREAD_MODE_MASK;
+		// NOTE: The V2 table path (DCE 4.x) must use ATOM_PPLL_SS_TYPE_V2_*
+		// constants, not V3. The V2 and V3 PLL selector bit fields differ:
+		//   V2: P1PLL=0x00, P2PLL=0x04, DCPLL=0x08  (2-bit field at bits[3:2])
+		//   V3: P1PLL=0x00, P2PLL=0x04, DCPLL=0x08  (happens to match here,
+		//       but PPLL_SEL_MASK differs: V2=0x0c vs V3=0x0c)
+		// Using V3 constants in V2 path is wrong in principle and could cause
+		// incorrect spread spectrum configuration on Evergreen (DCE 4) hardware,
+		// contributing to display artifacts (hash/noise) on these cards.
 		switch (pll->id) {
 			case ATOM_PPLL1:
 				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V2_P1PLL;
 				break;
 			case ATOM_PPLL2:
-				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V3_P2PLL;
+				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V2_P2PLL;
 				break;
 			case ATOM_DCPLL:
-				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V3_DCPLL;
+				args.v2.ucSpreadSpectrumType |= ATOM_PPLL_SS_TYPE_V2_DCPLL;
 				break;
 			case ATOM_PPLL_INVALID:
 				return;

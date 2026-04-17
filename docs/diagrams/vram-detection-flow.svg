@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" font-family="Segoe UI, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+    <linearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3a7bd5"/>
+      <stop offset="100%" stop-color="#2c5fa1"/>
+    </linearGradient>
+    <linearGradient id="fixGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#27ae60"/>
+      <stop offset="100%" stop-color="#1e8449"/>
+    </linearGradient>
+    <linearGradient id="bugGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e74c3c"/>
+      <stop offset="100%" stop-color="#c0392b"/>
+    </linearGradient>
+    <filter id="shadow" x="-3%" y="-3%" width="106%" height="106%">
+      <feDropShadow dx="2" dy="2" stdDeviation="2" flood-color="#00000030"/>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="900" height="45" fill="url(#headerGrad)" rx="5"/>
+  <text x="450" y="30" text-anchor="middle" fill="white" font-size="18" font-weight="bold">VRAM Size Detection — Decision Flow (radeon_hd.cpp)</text>
+
+  <!-- Start -->
+  <ellipse cx="450" cy="80" rx="90" ry="22" fill="#ecf0f1" stroke="#95a5a6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="450" y="85" text-anchor="middle" font-weight="bold">radeon_hd_init()</text>
+  <line x1="450" y1="102" x2="450" y2="130" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Decision: >= TAHITI? -->
+  <polygon points="450,130 570,170 450,210 330,170" fill="#fff3cd" stroke="#f0ad4e" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="450" y="168" text-anchor="middle" font-size="12">chipsetID &gt;= TAHITI?</text>
+  <text x="450" y="180" text-anchor="middle" font-size="10" fill="#666">(Aruba=105, Tahiti=104)</text>
+
+  <!-- YES branch (left) -->
+  <line x1="330" y1="170" x2="220" y2="170" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="280" y="163" text-anchor="middle" fill="#27ae60" font-weight="bold" font-size="11">YES</text>
+
+  <!-- Decision: APU? -->
+  <polygon points="140,210 220,250 140,290 60,250" fill="#fff3cd" stroke="#f0ad4e" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="140" y="248" text-anchor="middle" font-size="12">CHIP_APU?</text>
+  <line x1="140" y1="170" x2="140" y2="210" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- APU YES — CONFIG_MEMSIZE (bytes) -->
+  <line x1="60" y1="250" x2="10" y2="250" stroke="#555" stroke-width="1" />
+  <line x1="10" y1="250" x2="10" y2="310" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="35" y="243" fill="#27ae60" font-weight="bold" font-size="11">YES</text>
+  <rect x="-75" y="315" width="170" height="65" rx="6" fill="url(#fixGrad)" filter="url(#shadow)"/>
+  <text x="10" y="335" text-anchor="middle" fill="white" font-weight="bold" font-size="12">CONFIG_MEMSIZE</text>
+  <text x="10" y="350" text-anchor="middle" fill="#d5f5e3" font-size="11">(0x5428) / 1024</text>
+  <text x="10" y="368" text-anchor="middle" fill="#d5f5e3" font-size="10">UMA — bytes to KB</text>
+
+  <!-- APU NO — CONFIG_MEMSIZE_TAHITI (MB) -->
+  <line x1="220" y1="250" x2="270" y2="250" stroke="#555" stroke-width="1" />
+  <line x1="270" y1="250" x2="270" y2="310" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="250" y="243" fill="#e74c3c" font-weight="bold" font-size="11">NO</text>
+  <rect x="185" y="315" width="170" height="65" rx="6" fill="#3498db" filter="url(#shadow)"/>
+  <text x="270" y="335" text-anchor="middle" fill="white" font-weight="bold" font-size="12">CONFIG_MEMSIZE_TAHITI</text>
+  <text x="270" y="350" text-anchor="middle" fill="#d6eaf8" font-size="11">(0x03de) * 1024</text>
+  <text x="270" y="368" text-anchor="middle" fill="#d6eaf8" font-size="10">Discrete SI+ — MB to KB</text>
+
+  <!-- NO branch (right) — >= CEDAR? -->
+  <line x1="570" y1="170" x2="680" y2="170" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="620" y="163" text-anchor="middle" fill="#e74c3c" font-weight="bold" font-size="11">NO</text>
+
+  <polygon points="760,130 860,170 760,210 660,170" fill="#fff3cd" stroke="#f0ad4e" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="760" y="168" text-anchor="middle" font-size="12">chipsetID &gt;= CEDAR?</text>
+
+  <!-- Cedar YES — switch on chipsetID -->
+  <line x1="760" y1="210" x2="760" y2="240" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="775" y="228" fill="#27ae60" font-weight="bold" font-size="11">YES</text>
+
+  <rect x="660" y="245" width="200" height="55" rx="6" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1" filter="url(#shadow)"/>
+  <text x="760" y="265" text-anchor="middle" font-weight="bold" font-size="12">switch(chipsetID)</text>
+  <text x="760" y="280" text-anchor="middle" font-size="10" fill="#666">Palm/Sumo/Sumo2 → bytes</text>
+  <text x="760" y="292" text-anchor="middle" font-size="10" fill="#666">Others → MB</text>
+
+  <!-- Cedar NO — >= R600? -->
+  <line x1="860" y1="170" x2="900" y2="170" stroke="#555" stroke-width="1" />
+
+  <!-- Affected chips list -->
+  <rect x="20" y="420" width="240" height="155" rx="6" fill="#fef9e7" stroke="#f0ad4e" stroke-width="1" filter="url(#shadow)"/>
+  <text x="140" y="442" text-anchor="middle" font-weight="bold" font-size="13" fill="#7d6608">APUs in Tahiti+ Range</text>
+  <text x="35" y="462" font-size="11" fill="#7d6608">Aruba (105) — Trinity/Richland</text>
+  <text x="35" y="478" font-size="11" fill="#7d6608">Kaveri (108) — Sea Islands</text>
+  <text x="35" y="494" font-size="11" fill="#7d6608">Kabini (110) — Sea Islands</text>
+  <text x="35" y="510" font-size="11" fill="#7d6608">Mullins (111) — Sea Islands</text>
+  <text x="35" y="526" font-size="11" fill="#7d6608">Carrizo (116) — Volcanic Islands</text>
+  <text x="35" y="542" font-size="11" fill="#7d6608">Stoney (117) — Volcanic Islands</text>
+  <text x="35" y="558" font-size="11" fill="#7d6608">Raven (125) — Vega</text>
+
+  <!-- Bug explanation box -->
+  <rect x="290" y="420" width="280" height="100" rx="6" fill="#fdedec" stroke="#e74c3c" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="430" y="442" text-anchor="middle" font-weight="bold" font-size="13" fill="#c0392b">BUG (Before Fix)</text>
+  <text x="305" y="462" font-size="11" fill="#922b21">All Tahiti+ read CONFIG_MEMSIZE_TAHITI</text>
+  <text x="305" y="478" font-size="11" fill="#922b21">APUs have no dedicated VRAM → returns 0</text>
+  <text x="305" y="494" font-size="11" fill="#922b21">→ 0MB VRAM → app_server crash</text>
+  <text x="305" y="510" font-size="11" fill="#922b21">→ Affects bugs #17664, #10939</text>
+
+  <!-- Fix explanation box -->
+  <rect x="600" y="420" width="280" height="100" rx="6" fill="#eafaf1" stroke="#27ae60" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="740" y="442" text-anchor="middle" font-weight="bold" font-size="13" fill="#1e8449">FIX (After)</text>
+  <text x="615" y="462" font-size="11" fill="#1e8449">Check CHIP_APU flag in Tahiti+ path</text>
+  <text x="615" y="478" font-size="11" fill="#1e8449">APU → CONFIG_MEMSIZE (bytes → KB)</text>
+  <text x="615" y="494" font-size="11" fill="#1e8449">Discrete → CONFIG_MEMSIZE_TAHITI (MB → KB)</text>
+  <text x="615" y="510" font-size="11" fill="#1e8449">Also: Kaveri/Kabini/Mullins → CHIP_APU</text>
+
+  <!-- Register address legend -->
+  <rect x="20" y="600" width="860" height="65" rx="6" fill="#f4f6f7" stroke="#bdc3c7" stroke-width="1"/>
+  <text x="40" y="622" font-weight="bold" font-size="12" fill="#2c3e50">Register Addresses:</text>
+  <text x="40" y="642" font-size="11" fill="#555">CONFIG_MEMSIZE = 0x5428 (R600+, all generations) — Returns VRAM size; bytes for APU/R600, MB for Evergreen discrete</text>
+  <text x="40" y="656" font-size="11" fill="#555">CONFIG_MEMSIZE_TAHITI = 0x03de (SI+ discrete only) — Returns dedicated VRAM in MB; reads 0 on APUs (no VRAM to report)</text>
+</svg>

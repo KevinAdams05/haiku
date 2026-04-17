@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" font-family="Segoe UI, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+    <linearGradient id="h" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d35400"/>
+      <stop offset="100%" stop-color="#a04000"/>
+    </linearGradient>
+    <filter id="s" x="-2%" y="-3%" width="104%" height="106%">
+      <feDropShadow dx="1" dy="1" stdDeviation="2" flood-color="#00000025"/>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <rect x="0" y="0" width="900" height="40" fill="url(#h)" rx="5"/>
+  <text x="450" y="27" text-anchor="middle" fill="white" font-size="16" font-weight="bold">DPMS Power Sequencing — eDP and DP Fixes (encoder.cpp)</text>
+
+  <!-- Power ON sequence -->
+  <rect x="30" y="55" width="410" height="370" rx="8" fill="#eafaf1" stroke="#27ae60" stroke-width="2" filter="url(#s)"/>
+  <rect x="30" y="55" width="410" height="30" rx="8" fill="#27ae60"/>
+  <rect x="30" y="75" width="410" height="10" fill="#27ae60"/>
+  <text x="235" y="75" text-anchor="middle" fill="white" font-weight="bold" font-size="14">B_DPMS_ON (Wake / Enable)</text>
+
+  <!-- ON Steps -->
+  <rect x="55" y="95" width="360" height="28" rx="5" fill="#d5f5e3" stroke="#82e0aa" stroke-width="1"/>
+  <text x="235" y="114" text-anchor="middle" font-size="11">1. encoder_dig_setup(SETUP + PANEL_MODE)</text>
+
+  <line x1="235" y1="123" x2="235" y2="133" stroke="#27ae60" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="55" y="138" width="360" height="38" rx="5" fill="#fcf3cf" stroke="#f7dc6f" stroke-width="1.5"/>
+  <text x="235" y="155" text-anchor="middle" font-weight="bold" font-size="11" fill="#7d6608">2. eDP: TRANSMITTER_ACTION_POWER_ON</text>
+  <text x="235" y="170" text-anchor="middle" font-size="9" fill="#9a7d0a">NEW — was a TODO stub, now implemented</text>
+
+  <line x1="235" y1="176" x2="235" y2="186" stroke="#27ae60" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="55" y="191" width="360" height="28" rx="5" fill="#d5f5e3" stroke="#82e0aa" stroke-width="1"/>
+  <text x="235" y="210" text-anchor="middle" font-size="11">3. transmitter_dig_setup(ENABLE)</text>
+
+  <line x1="235" y1="219" x2="235" y2="229" stroke="#27ae60" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="55" y="234" width="360" height="28" rx="5" fill="#d5f5e3" stroke="#82e0aa" stroke-width="1"/>
+  <text x="235" y="253" text-anchor="middle" font-size="11">4. DP: link_train (with retry fallback)</text>
+
+  <line x1="235" y1="262" x2="235" y2="272" stroke="#27ae60" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="55" y="277" width="360" height="28" rx="5" fill="#d5f5e3" stroke="#82e0aa" stroke-width="1"/>
+  <text x="235" y="296" text-anchor="middle" font-size="11">5. LCD: TRANSMITTER_ACTION_LCD_BLON</text>
+
+  <line x1="235" y1="305" x2="235" y2="315" stroke="#27ae60" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="55" y="320" width="360" height="28" rx="5" fill="#d5f5e3" stroke="#82e0aa" stroke-width="1"/>
+  <text x="235" y="339" text-anchor="middle" font-size="11">6. External encoder setup (if present)</text>
+
+  <!-- Timing note -->
+  <text x="55" y="375" font-size="10" fill="#555">Power-on must happen before transmitter enable —</text>
+  <text x="55" y="388" font-size="10" fill="#555">the eDP panel needs power before it can receive</text>
+  <text x="55" y="401" font-size="10" fill="#555">the DisplayPort link training signals.</text>
+
+  <!-- Power OFF sequence -->
+  <rect x="470" y="55" width="410" height="370" rx="8" fill="#fdedec" stroke="#e74c3c" stroke-width="2" filter="url(#s)"/>
+  <rect x="470" y="55" width="410" height="30" rx="8" fill="#e74c3c"/>
+  <rect x="470" y="75" width="410" height="10" fill="#e74c3c"/>
+  <text x="675" y="75" text-anchor="middle" fill="white" font-weight="bold" font-size="14">B_DPMS_OFF (Sleep / Disable)</text>
+
+  <!-- OFF Steps -->
+  <rect x="495" y="95" width="360" height="28" rx="5" fill="#fadbd8" stroke="#f1948a" stroke-width="1"/>
+  <text x="675" y="114" text-anchor="middle" font-size="11">1. DP: encoder_dig_setup(DP_VIDEO_OFF)</text>
+
+  <line x1="675" y1="123" x2="675" y2="133" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="495" y="138" width="360" height="28" rx="5" fill="#fadbd8" stroke="#f1948a" stroke-width="1"/>
+  <text x="675" y="157" text-anchor="middle" font-size="11">2. External encoder disable (if present)</text>
+
+  <line x1="675" y1="166" x2="675" y2="176" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="495" y="181" width="360" height="28" rx="5" fill="#fadbd8" stroke="#f1948a" stroke-width="1"/>
+  <text x="675" y="200" text-anchor="middle" font-size="11">3. LCD: TRANSMITTER_ACTION_LCD_BLOFF</text>
+
+  <line x1="675" y1="209" x2="675" y2="219" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="495" y="224" width="360" height="38" rx="5" fill="#fcf3cf" stroke="#f7dc6f" stroke-width="1.5"/>
+  <text x="675" y="241" text-anchor="middle" font-weight="bold" font-size="11" fill="#7d6608">4. DP (non-Travis): SET_POWER D3</text>
+  <text x="675" y="256" text-anchor="middle" font-size="9" fill="#9a7d0a">NEW — was a TODO, now sends DPCD sleep</text>
+
+  <line x1="675" y1="262" x2="675" y2="272" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="495" y="277" width="360" height="28" rx="5" fill="#fadbd8" stroke="#f1948a" stroke-width="1"/>
+  <text x="675" y="296" text-anchor="middle" font-size="11">5. transmitter_dig_setup(DISABLE)</text>
+
+  <line x1="675" y1="305" x2="675" y2="315" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="495" y="320" width="360" height="38" rx="5" fill="#fcf3cf" stroke="#f7dc6f" stroke-width="1.5"/>
+  <text x="675" y="337" text-anchor="middle" font-weight="bold" font-size="11" fill="#7d6608">6. Travis: SET_POWER D3 (after disable)</text>
+  <text x="675" y="352" text-anchor="middle" font-size="9" fill="#9a7d0a">NEW — Travis requires transmitter off first</text>
+
+  <line x1="675" y1="358" x2="675" y2="368" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <rect x="495" y="373" width="360" height="38" rx="5" fill="#fcf3cf" stroke="#f7dc6f" stroke-width="1.5"/>
+  <text x="675" y="390" text-anchor="middle" font-weight="bold" font-size="11" fill="#7d6608">7. eDP: TRANSMITTER_ACTION_POWER_OFF</text>
+  <text x="675" y="405" text-anchor="middle" font-size="9" fill="#9a7d0a">NEW — completes shutdown of eDP panel</text>
+
+  <!-- Legend -->
+  <rect x="30" y="440" width="850" height="30" rx="5" fill="#f4f6f7" stroke="#bdc3c7" stroke-width="1"/>
+  <rect x="50" y="449" width="12" height="12" fill="#fcf3cf" stroke="#f7dc6f" stroke-width="1" rx="2"/>
+  <text x="68" y="460" font-size="11" fill="#555">= Newly implemented (was TODO/stub)</text>
+  <rect x="310" y="449" width="12" height="12" fill="#d5f5e3" stroke="#82e0aa" stroke-width="1" rx="2"/>
+  <text x="328" y="460" font-size="11" fill="#555">= Existing, working</text>
+  <text x="520" y="460" font-size="11" fill="#555">DPCD 0x600 = DP_SET_POWER register (D0=wake, D3=sleep)</text>
+</svg>
