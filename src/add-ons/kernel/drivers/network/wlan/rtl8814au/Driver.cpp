@@ -17,6 +17,8 @@
 #include "Driver.h"
 
 #include <new>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <KernelExport.h>

@@ -15,6 +15,7 @@
 
 #include <Drivers.h>
 #include <USB3.h>
+#include <lock.h>
 
 #include "RTL8814AU.h"
 

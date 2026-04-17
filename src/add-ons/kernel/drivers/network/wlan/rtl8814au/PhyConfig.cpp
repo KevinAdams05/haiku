@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include <KernelExport.h>
+#include <OS.h>
 
 #include "EfuseReader.h"
 #include "PhyRegTables.h"

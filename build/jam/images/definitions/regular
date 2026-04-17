@@ -328,6 +328,7 @@ SYSTEM_ADD_ONS_DRIVERS_NET += [ FFilterByBuildFeatures
 		marvell88w8335
 		ralinkwifi
 		realtekwifi
+		rtl8814au
 	}@ # x86,x86_64,riscv64
 ] ;
 

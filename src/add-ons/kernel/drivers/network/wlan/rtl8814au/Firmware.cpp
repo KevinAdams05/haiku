@@ -30,6 +30,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <ByteOrder.h>
 #include <KernelExport.h>
 
 #include "RegisterIO.h"

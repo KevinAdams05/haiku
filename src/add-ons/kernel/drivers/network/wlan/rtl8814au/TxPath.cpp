@@ -28,6 +28,7 @@
 #include <new>
 #include <string.h>
 
+#include <ByteOrder.h>
 #include <KernelExport.h>
 #include <OS.h>
 #include <util/AutoLock.h>
