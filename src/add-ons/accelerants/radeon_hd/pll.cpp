@@ -1051,6 +1051,17 @@ pll_set_external(uint32 clock)
 					else
 						args.v6.ucPpll = ATOM_DCPLL;
 					break;
+				case 7:
+					// SetPixelClock v1.7 — used by Polaris (DCE 11.2+).
+					// Normally Polaris should be routed through pll_set_dce()
+					// in pll_external_init(), but handle v7 here as a safety
+					// fallback to avoid a silent failure.
+					args.v7.ulPixelClock
+						= B_HOST_TO_LENDIAN_INT32(clock / 10);
+					args.v7.ucMiscInfo = 0;
+					args.v7.ucCRTC = ATOM_CRTC_INVALID;
+					args.v7.ucPpll = ATOM_DCPLL;
+					break;
 				default:
 					ERROR("%s: Unknown table version %" B_PRIu8
 						".%" B_PRIu8 "\n", __func__, tableMajor, tableMinor);
@@ -1129,7 +1140,13 @@ pll_external_init()
 {
 	radeon_shared_info &info = *gInfo->shared_info;
 
-	if (info.dceMajor >= 12) {
+	uint32 dceVersion = (info.dceMajor * 100) + info.dceMinor;
+
+	// Polaris (DCE 11.2+) and later use SetDCEClock for display engine
+	// clock initialization instead of SetPixelClock. Without this routing,
+	// Polaris falls through to pll_set_external which only handles
+	// SetPixelClock up to v1.6, and v1.7 (used by Polaris) would fail.
+	if (dceVersion >= 1102) {
 		pll_set_dce(gInfo->displayClockFrequency,
 			DCE_CLOCK_TYPE_DISPCLK, ATOM_GCK_DFS);
 		pll_set_dce(gInfo->displayClockFrequency,
@@ -1256,9 +1273,12 @@ pll_pick(uint32 connectorIndex)
 
 	pll->id = ATOM_PPLL_INVALID;
 
-	// DCE 6.1 APU, UNIPHYA requires PLL2
-	if (gConnector[connectorIndex]->encoder.objectID
-		== ENCODER_OBJECT_ID_INTERNAL_UNIPHY && !linkB) {
+	// DCE 6.1 APU (Aruba / Trinity / Richland) requires UNIPHYA on PLL2.
+	// This check must be gated on DCE version — otherwise it would
+	// incorrectly force PLL2 on all cards with INTERNAL_UNIPHY on linkA.
+	if (dceVersion == 601
+		&& gConnector[connectorIndex]->encoder.objectID
+			== ENCODER_OBJECT_ID_INTERNAL_UNIPHY && !linkB) {
 		pll->id = ATOM_PPLL2;
 		return B_OK;
 	}

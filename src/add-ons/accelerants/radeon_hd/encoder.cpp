@@ -1383,9 +1383,14 @@ transmitter_dig_setup(uint32 connectorIndex, uint32 pixelClock,
 							|= ATOM_TRANSMITTER_CONFIG_DIG1_ENCODER;
 					}
 
-					// TODO: IGP DIG Transmitter setup
+					// TODO: IGP DIG Transmitter lane configuration.
+					// This requires igpLaneInfo from the AtomBIOS connector
+					// table, which is not yet parsed for IGP chips
+					// (see connector.cpp where igpLaneInfo is always 0).
+					// Without this, IGP chips may default to wrong lane
+					// assignments, but linkA/linkB selection below still works.
 					#if 0
-					if ((rdev->flags & RADEON_IS_IGP) && (encoderObjectID
+					if ((info.chipsetFlags & CHIP_IGP) != 0 && (encoderObjectID
 						== ENCODER_OBJECT_ID_INTERNAL_UNIPHY)) {
 						if (is_dp || (radeon_encoder->pixel_clock <= 165000)) {
 							if (igp_lane_info & 0x1)
@@ -2021,9 +2026,11 @@ encoder_dpms_set_dig(uint8 crtcID, int mode)
 			}
 
 			if (connector->type == VIDEO_CONNECTOR_EDP) {
-				// TODO: If VIDEO_CONNECTOR_EDP, ATOM_TRANSMITTER_ACTION_POWER_ON
-				ERROR("%s: TODO, edp_panel_power!\n",
-					__func__);
+				// eDP panels require explicit power sequencing via AtomBIOS.
+				// The panel must be powered on before the transmitter is enabled,
+				// otherwise the embedded DisplayPort link won't initialize.
+				transmitter_dig_setup(connectorIndex, pll->pixelClock, 0, 0,
+					ATOM_TRANSMITTER_ACTION_POWER_ON);
 			}
 
 			// Enable transmitter
@@ -2068,8 +2075,13 @@ encoder_dpms_set_dig(uint8 crtcID, int mode)
 					0, 0, ATOM_TRANSMITTER_ACTION_LCD_BLOFF);
 			}
 			if (connector_is_dp(connectorIndex) && !travisQuirk) {
-				// If not TRAVIS on < DCE 5, set_rx_power_state D3
-				ERROR("%s: TODO: dpms off set_rx_power_state D3\n", __func__);
+				// Put the DP receiver into power-save state D3 via DPCD
+				// register 0x600 (SET_POWER). This tells the downstream
+				// device (monitor/hub) to enter low-power mode. Without this,
+				// the monitor may not properly sleep or may draw excess power.
+				// Skip for Travis (external DP bridge on DCE < 5) which
+				// handles its own power states separately.
+				dpcd_reg_write(connectorIndex, DP_SET_POWER, DP_SET_POWER_D3);
 			}
 			if (info.dceMajor >= 4) {
 				// Disable transmitter
@@ -2084,12 +2096,18 @@ encoder_dpms_set_dig(uint8 crtcID, int mode)
 
 			if (connector_is_dp(connectorIndex)) {
 				if (travisQuirk) {
-					ERROR("%s: TODO: dpms off set_rx_power_state D3\n",
-						__func__);
+					// Travis external DP bridge on DCE < 5: put DP receiver
+					// into D3 after the transmitter has been disabled, since
+					// Travis requires this ordering (transmitter off first).
+					dpcd_reg_write(connectorIndex,
+						DP_SET_POWER, DP_SET_POWER_D3);
 				}
 				if (connector->type == VIDEO_CONNECTOR_EDP) {
-					// TODO: ATOM_TRANSMITTER_ACTION_POWER_OFF
-					ERROR("%s: TODO, edp_panel_power!\n", __func__);
+					// Power off the eDP panel after the transmitter has been
+					// disabled. This completes the reverse of the power-on
+					// sequence and allows the panel to fully shut down.
+					transmitter_dig_setup(connectorIndex, pll->pixelClock,
+						0, 0, ATOM_TRANSMITTER_ACTION_POWER_OFF);
 				}
 			}
 			break;

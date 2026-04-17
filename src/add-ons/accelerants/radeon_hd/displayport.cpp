@@ -414,15 +414,19 @@ dp_get_link_rate(uint32 connectorIndex, display_mode* mode)
 	if (mode->timing.pixel_clock <= maxPixelClock)
 		return 270000;
 
-	// TODO: DisplayPort 1.2
-	#if 0
+	// DisplayPort 1.2 HBR2 (High Bit Rate 2) — 5.4 Gbps per lane.
+	// Requires DCE >= 5, a sufficiently fast external DP clock (>= 539 MHz),
+	// and HBR2 capability reported by the encoder's BIOS cap record.
+	// This enables higher resolutions over DP (e.g., 4K@30 or 2560x1440@60).
 	if (dp_is_dp12_capable(connectorIndex)) {
 		maxPixelClock = dp_get_pixel_clock_max(540000, laneCount, bitsPerPixel);
 		if (mode->timing.pixel_clock <= maxPixelClock)
 			return 540000;
 	}
-	#endif
 
+	// If no standard rate is sufficient, read the sink's maximum link rate
+	// from DPCD and try to use it. dp_decode_link_rate will return 162000
+	// as a safe fallback if the raw value is unrecognized.
 	return dp_decode_link_rate(dpcd_reg_read(connectorIndex, DP_MAX_LINK_RATE));
 }
 
@@ -812,6 +816,97 @@ dp_link_train_ce(uint32 connectorIndex, bool tp3Support)
 }
 
 
+/*
+ * dp_link_train_attempt - Perform one attempt of DP link training
+ *
+ * Runs clock recovery (CR) and channel equalization (CE) training.
+ * Returns B_OK if both phases succeed, B_ERROR otherwise.
+ * Separated from dp_link_train to allow retry with reduced link parameters.
+ */
+static status_t
+dp_link_train_attempt(uint32 connectorIndex, display_mode* mode,
+	bool dpTPS3Supported)
+{
+	dp_info* dp = &gConnector[connectorIndex]->dpInfo;
+	radeon_shared_info &info = *gInfo->shared_info;
+
+	TRACE("%s: attempting link rate %" B_PRIu32 " kHz, %" B_PRIu32 " lanes\n",
+		__func__, dp->linkRate, dp->laneCount);
+
+	// Configure the link rate and lane count on the sink
+	uint8 sandbox = dp_encode_link_rate(dp->linkRate);
+	dpcd_reg_write(connectorIndex, DP_LINK_RATE, sandbox);
+
+	sandbox = dp->laneCount;
+	if (dp->revision >= DP_DPCD_REV_11
+		&& (dpcd_reg_read(connectorIndex, DP_MAX_LANE_COUNT)
+			& DP_ENHANCED_FRAME_CAP)) {
+		sandbox |= DP_ENHANCED_FRAME_EN;
+	}
+	dpcd_reg_write(connectorIndex, DP_LANE_COUNT, sandbox);
+
+	uint32 encoderConfig = dp_get_encoder_config(connectorIndex);
+
+	// Start link training on source
+	if (info.dceMajor >= 4) {
+		encoder_dig_setup(connectorIndex, mode->timing.pixel_clock,
+			ATOM_ENCODER_CMD_DP_LINK_TRAINING_START);
+	} else {
+		dp_encoder_service(ATOM_DP_ACTION_TRAINING_START,
+			mode->timing.pixel_clock, 0, encoderConfig);
+	}
+
+	// Disable training pattern before starting fresh
+	dpcd_reg_write(connectorIndex, DP_TRAINING_PATTERN_SET,
+		DP_TRAINING_PATTERN_DISABLE);
+
+	// Phase 1: Clock Recovery — synchronizes the bit clock between
+	// source and sink by adjusting voltage swing and pre-emphasis
+	status_t result = dp_link_train_cr(connectorIndex);
+	if (result != B_OK) {
+		ERROR("%s: clock recovery failed at link rate %" B_PRIu32 "\n",
+			__func__, dp->linkRate);
+		return result;
+	}
+
+	// Phase 2: Channel Equalization — fine-tunes signal quality
+	// so data can be reliably decoded across all lanes
+	result = dp_link_train_ce(connectorIndex, dpTPS3Supported);
+	if (result != B_OK) {
+		ERROR("%s: channel equalization failed at link rate %" B_PRIu32 "\n",
+			__func__, dp->linkRate);
+		return result;
+	}
+
+	return B_OK;
+}
+
+
+/*
+ * dp_reduce_link_rate - Step down to the next lower DP link rate
+ *
+ * Returns true if a lower rate is available, false if already at minimum.
+ * Used during link training fallback when the current rate fails.
+ */
+static bool
+dp_reduce_link_rate(dp_info* dp)
+{
+	switch (dp->linkRate) {
+		case 540000:
+			dp->linkRate = 270000;
+			TRACE("%s: reducing link rate to 2.7 GHz\n", __func__);
+			return true;
+		case 270000:
+			dp->linkRate = 162000;
+			TRACE("%s: reducing link rate to 1.62 GHz\n", __func__);
+			return true;
+		default:
+			// Already at minimum (1.62 GHz) or unknown rate
+			return false;
+	}
+}
+
+
 status_t
 dp_link_train(uint8 crtcID)
 {
@@ -854,41 +949,32 @@ dp_link_train(uint8 crtcID)
 	encoder_dig_setup(connectorIndex, mode->timing.pixel_clock,
 		ATOM_ENCODER_CMD_SETUP_PANEL_MODE);
 
-	// Enable enhanced frame if supported
-	sandbox = dpcd_reg_read(connectorIndex, DP_LANE_COUNT);
-	if (dp->revision >= DP_DPCD_REV_11
-		&& (dpcd_reg_read(connectorIndex, DP_MAX_LANE_COUNT)
-			& DP_ENHANCED_FRAME_CAP)) {
-		sandbox |= DP_ENHANCED_FRAME_EN;
-	}
-	dpcd_reg_write(connectorIndex, DP_LANE_COUNT, sandbox);
+	// Attempt link training, falling back to lower link rates on failure.
+	// DisplayPort spec allows the source to retry at reduced bandwidth when
+	// training fails — this is essential for long cables or marginal links.
+	uint32 originalLinkRate = dp->linkRate;
+	status_t result = B_ERROR;
 
-	// Set the link rate on the DP sink
-	sandbox = dp_encode_link_rate(dp->linkRate);
-	dpcd_reg_write(connectorIndex, DP_LINK_RATE, sandbox);
+	do {
+		result = dp_link_train_attempt(connectorIndex, mode, dpTPS3Supported);
+		if (result == B_OK)
+			break;
 
-	uint32 encoderConfig = dp_get_encoder_config(connectorIndex);
-
-	// Start link training on source
-	if (info.dceMajor >= 4) {
-		encoder_dig_setup(connectorIndex, mode->timing.pixel_clock,
-			ATOM_ENCODER_CMD_DP_LINK_TRAINING_START);
-	} else {
-		dp_encoder_service(ATOM_DP_ACTION_TRAINING_START,
-			mode->timing.pixel_clock, 0, encoderConfig);
-	}
-
-	// Disable the training pattern on the sink
-	dpcd_reg_write(connectorIndex, DP_TRAINING_PATTERN_SET, DP_TRAINING_PATTERN_DISABLE);
-
-	dp_link_train_cr(connectorIndex);
-	dp_link_train_ce(connectorIndex, dpTPS3Supported);
+		// Training failed — try a lower link rate if possible
+		if (!dp_reduce_link_rate(dp)) {
+			ERROR("%s: link training exhausted all link rates\n", __func__);
+			break;
+		}
+	} while (true);
 
 	// *** DisplayPort link training finish
 	snooze(400);
 
 	// Disable the training pattern on the sink
-	dpcd_reg_write(connectorIndex, DP_TRAINING_PATTERN_SET, DP_TRAINING_PATTERN_DISABLE);
+	dpcd_reg_write(connectorIndex, DP_TRAINING_PATTERN_SET,
+		DP_TRAINING_PATTERN_DISABLE);
+
+	uint32 encoderConfig = dp_get_encoder_config(connectorIndex);
 
 	// Disable the training pattern on the source
 	if (info.dceMajor >= 4) {
@@ -899,7 +985,17 @@ dp_link_train(uint8 crtcID)
 			mode->timing.pixel_clock, 0, encoderConfig);
 	}
 
-	return B_OK;
+	if (result != B_OK) {
+		ERROR("%s: link training failed on connector %" B_PRIu32 "\n",
+			__func__, connectorIndex);
+		dp->linkRate = originalLinkRate;
+	} else if (dp->linkRate != originalLinkRate) {
+		TRACE("%s: link trained at reduced rate %" B_PRIu32
+			" kHz (was %" B_PRIu32 " kHz)\n",
+			__func__, dp->linkRate, originalLinkRate);
+	}
+
+	return result;
 }
 
 
