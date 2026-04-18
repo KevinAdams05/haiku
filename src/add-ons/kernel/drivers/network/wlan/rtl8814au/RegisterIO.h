@@ -46,6 +46,13 @@ public:
 	status_t					Write16(uint16 address, uint16 value);
 	status_t					Write32(uint16 address, uint32 value);
 
+	// Bulk data write: writes N consecutive bytes to the given address
+	// in a single USB control transfer. No byte-order conversion is
+	// performed — data is written as raw bytes. Used for firmware
+	// download where the reference driver sends 254-byte blocks.
+	status_t					WriteN(uint16 address,
+									const void* buffer, uint16 length);
+
 	// Masked write: read current value, clear bits in mask, set new
 	// bits. Useful for modifying individual fields without disturbing
 	// adjacent bits.

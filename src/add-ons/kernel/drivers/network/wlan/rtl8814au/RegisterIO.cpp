@@ -148,6 +148,25 @@ RTL8814AURegisterIO::Write32(uint16 address, uint32 value)
 }
 
 
+/*! Write N consecutive bytes to a register/memory address in a single USB
+    vendor control transfer. No byte-order conversion is performed — data
+    is written as raw bytes.
+
+    Used primarily for firmware download, where the reference driver sends
+    data in 254-byte blocks (MAX_REG_BOLCK_SIZE for USB) via rtw_writeN().
+
+    \param address  Starting register/memory address
+    \param buffer   Data to write (raw bytes, no byte-order conversion)
+    \param length   Number of bytes (1–254 recommended for USB control xfers)
+    \return B_OK on success, or an error code.
+*/
+status_t
+RTL8814AURegisterIO::WriteN(uint16 address, const void* buffer, uint16 length)
+{
+	return _VendorWrite(address, buffer, length);
+}
+
+
 // ---------------------------------------------------------------------------
 // Masked write operations — read-modify-write with bit-level granularity
 // ---------------------------------------------------------------------------
@@ -319,12 +338,12 @@ RTL8814AURegisterIO::_VendorRead(uint16 address, void* buffer, uint16 length)
 }
 
 
-/*! Perform a USB vendor-specific control transfer to write to a register.
-    Retries up to kMaxRetryCount times on transient errors.
+/*! Perform a USB vendor-specific control transfer to write to a register
+    or memory address. Retries up to kMaxRetryCount times on transient errors.
 
-    \param address  Register address (placed in wValue)
+    \param address  Register/memory address (placed in wValue)
     \param buffer   Data to write
-    \param length   Number of bytes to write (1, 2, or 4)
+    \param length   Number of bytes to write (1–254 for USB control xfers)
     \return B_OK on success, or USB error code.
 */
 status_t

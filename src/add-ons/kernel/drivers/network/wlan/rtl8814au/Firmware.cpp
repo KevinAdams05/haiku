@@ -303,10 +303,23 @@ RTL8814AUFirmware::_PageWriteFirmware(const uint8* data, uint32 size)
 }
 
 
+// Maximum bytes per USB vendor control transfer for firmware data.
+// Matches MAX_REG_BOLCK_SIZE (254) used by _BlockWrite_8814A() in the
+// reference driver's USB path. The reference driver writes firmware data
+// in 254-byte blocks via rtw_writeN(), NOT 4-byte register writes.
+// Using 4-byte Write32 individually produces ~16,000+ USB control transfers
+// for a ~67 KB firmware, and the chip's checksum accumulator apparently
+// does not work correctly with that access pattern.
+static const uint32 kFwUsbBlockSize = 254;
+
+
 /*! Write a single 4 KB page of firmware data. Sets the page number in
-    REG_MCUFWDL, then writes data word-by-word to kFwStartAddress (0x1000).
+    REG_MCUFWDL, then writes data in 254-byte blocks to kFwStartAddress
+    (0x1000) using bulk USB control transfers.
 
     Matches _PageWrite_8814A() + _BlockWrite_8814A() in the reference driver.
+    The reference driver's USB path uses rtw_writeN() with 254-byte blocks,
+    falling back to 4-byte and 1-byte writes for the remainder.
 */
 status_t
 RTL8814AUFirmware::_WritePage(uint32 page, const uint8* data, uint32 size)
@@ -321,22 +334,51 @@ RTL8814AUFirmware::_WritePage(uint32 page, const uint8* data, uint32 size)
 	if (status != B_OK)
 		return status;
 
-	// Write data to kFwStartAddress in 4-byte words
-	for (uint32 i = 0; i < size; i += 4) {
-		uint32 word = 0;
-		uint32 remaining = size - i;
-		if (remaining >= 4) {
-			memcpy(&word, data + i, 4);
-		} else {
-			// Partial last word — zero-pad
-			memcpy(&word, data + i, remaining);
-		}
-		status = fRegisterIO->Write32(kFwStartAddress + i, word);
+	// Phase 1: Write 254-byte blocks via WriteN (bulk USB control transfers).
+	// This matches the reference driver's _BlockWrite_8814A() USB code path
+	// which uses rtw_writeN() with MAX_REG_BOLCK_SIZE = 254.
+	uint32 offset = 0;
+	uint32 blockCount = size / kFwUsbBlockSize;
+
+	for (uint32 i = 0; i < blockCount; i++) {
+		status = fRegisterIO->WriteN(
+			kFwStartAddress + offset,
+			data + offset,
+			(uint16)kFwUsbBlockSize);
 		if (status != B_OK) {
-			dprintf(RTL8814AU_DRIVER_NAME ": page write failed at "
-				"page %" B_PRIu32 " offset %" B_PRIu32 "\n", page, i);
+			dprintf(RTL8814AU_DRIVER_NAME ": page %" B_PRIu32 " block write "
+				"failed at offset %" B_PRIu32 "\n", page, offset);
 			return status;
 		}
+		offset += kFwUsbBlockSize;
+	}
+
+	// Phase 2: Write remaining 4-byte words
+	uint32 remainSize = size - offset;
+	uint32 wordCount = remainSize / 4;
+
+	for (uint32 i = 0; i < wordCount; i++) {
+		uint32 word;
+		memcpy(&word, data + offset, 4);
+		status = fRegisterIO->Write32(kFwStartAddress + offset, word);
+		if (status != B_OK) {
+			dprintf(RTL8814AU_DRIVER_NAME ": page %" B_PRIu32 " word write "
+				"failed at offset %" B_PRIu32 "\n", page, offset);
+			return status;
+		}
+		offset += 4;
+	}
+
+	// Phase 3: Write remaining 1-byte tail
+	remainSize = size - offset;
+	for (uint32 i = 0; i < remainSize; i++) {
+		status = fRegisterIO->Write8(kFwStartAddress + offset, data[offset]);
+		if (status != B_OK) {
+			dprintf(RTL8814AU_DRIVER_NAME ": page %" B_PRIu32 " byte write "
+				"failed at offset %" B_PRIu32 "\n", page, offset);
+			return status;
+		}
+		offset++;
 	}
 
 	return B_OK;
@@ -353,7 +395,10 @@ RTL8814AUFirmware::_WritePage(uint32 page, const uint8* data, uint32 size)
 status_t
 RTL8814AUFirmware::_PollForReady()
 {
-	dprintf(RTL8814AU_DRIVER_NAME ": waiting for firmware checksum\n");
+	// Log register state before polling for diagnostics
+	uint32 preCtrl = fRegisterIO->Read32(kRegMcuFwDl);
+	dprintf(RTL8814AU_DRIVER_NAME ": waiting for firmware checksum "
+		"(REG_MCUFWDL=0x%08" B_PRIx32 ")\n", preCtrl);
 
 	// Stage 1: Wait for checksum report from MCU
 	uint32 attempts = 0;
@@ -365,23 +410,32 @@ RTL8814AUFirmware::_PollForReady()
 		attempts++;
 	}
 	if (attempts >= kFirmwarePollAttempts) {
-		dprintf(RTL8814AU_DRIVER_NAME ": firmware checksum timed out\n");
+		uint32 finalCtrl = fRegisterIO->Read32(kRegMcuFwDl);
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware checksum timed out "
+			"(REG_MCUFWDL=0x%08" B_PRIx32 " after %" B_PRIu32
+			" attempts)\n", finalCtrl, attempts);
 		return B_TIMED_OUT;
 	}
 
-	dprintf(RTL8814AU_DRIVER_NAME ": firmware checksum OK, "
-		"signaling MCU to start\n");
+	dprintf(RTL8814AU_DRIVER_NAME ": firmware checksum OK after %" B_PRIu32
+		" attempts, signaling MCU to start\n", attempts);
 
-	// Stage 2: Tell MCU to begin firmware initialization
-	uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
-	ctrl |= kMcuFwDlRdy;
-	ctrl &= ~kMcuWintiniRdy;
-	fRegisterIO->Write32(kRegMcuFwDl, ctrl);
+	// Stage 2: Tell MCU to begin firmware initialization.
+	// Set MCUFWDL_RDY (bit 1) and clear WINTINI_RDY (bit 6) in byte 0.
+	// Use 8-bit write to byte 0 only — avoids writing back W1C bits
+	// (like checksum report bit 2) that a 32-bit read-modify-write could
+	// accidentally clear.
+	{
+		uint8 byte0 = fRegisterIO->Read8(kRegMcuFwDl);
+		byte0 |= (uint8)kMcuFwDlRdy;		// Set bit 1
+		byte0 &= ~(uint8)kMcuWintiniRdy;	// Clear bit 6
+		fRegisterIO->Write8(kRegMcuFwDl, byte0);
+	}
 
 	// Stage 3: Wait for firmware to signal init complete
 	attempts = 0;
 	while (attempts < kFirmwarePollAttempts) {
-		ctrl = fRegisterIO->Read32(kRegMcuFwDl);
+		uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
 		if (ctrl & kMcuWintiniRdy)
 			break;
 		snooze(kFirmwarePollDelay);
