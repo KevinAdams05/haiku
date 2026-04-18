@@ -689,7 +689,7 @@ enum C2HEventID {
 // for the logical EFUSE map (after decoding the physical EFUSE).
 // ---------------------------------------------------------------------------
 
-static const uint16 kEfuseMacAddr			= 0x107;	// 6 bytes (USB variant)
+static const uint16 kEfuseMacAddr			= 0x0D8;	// 6 bytes (USB variant)
 static const uint16 kEfuseAntennaConfig		= 0x00E;	// TX + RX path config
 static const uint16 kEfuseRfeType			= 0x010;	// RF front-end type (0-6)
 static const uint16 kEfuseTxPwr2G			= 0x020;	// 2.4 GHz power table

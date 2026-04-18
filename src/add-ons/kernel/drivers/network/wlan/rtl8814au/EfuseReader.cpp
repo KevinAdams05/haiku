@@ -7,7 +7,7 @@
  * Physical EFUSE is 1024 bytes stored in a compressed format. This module
  * reads the raw data and decodes it into a 512-byte logical map. The map
  * contains:
- *   - MAC address (offset 0x107, 6 bytes — USB variant)
+ *   - MAC address (offset 0x0D8, 6 bytes — USB variant)
  *   - Antenna TX/RX path config (offset 0x00E)
  *   - RFE type (offset 0x010) — determines PA/LNA wiring
  *   - TX power calibration tables (2.4 GHz and 5 GHz)
@@ -85,10 +85,11 @@ RTL8814AUEfuseReader::ReadEfuseMap()
 		fMap[kEfuseRfeType]);
 	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x100] thermal=%02x\n",
 		fMap[kEfuseThermalMeter]);
-	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x107..0x10C] MAC: "
+	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x0D8..0x0DD] MAC: "
 		"%02x:%02x:%02x:%02x:%02x:%02x\n",
-		fMap[0x107], fMap[0x108], fMap[0x109],
-		fMap[0x10A], fMap[0x10B], fMap[0x10C]);
+		fMap[kEfuseMacAddr], fMap[kEfuseMacAddr + 1],
+		fMap[kEfuseMacAddr + 2], fMap[kEfuseMacAddr + 3],
+		fMap[kEfuseMacAddr + 4], fMap[kEfuseMacAddr + 5]);
 
 	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map read successfully\n");
 	return B_OK;

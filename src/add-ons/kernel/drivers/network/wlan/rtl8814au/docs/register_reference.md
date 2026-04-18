@@ -260,7 +260,7 @@ EFUSE contains factory-programmed calibration data. Total: 1024 bytes across
 
 | Offset | Length | Content |
 |--------|--------|---------|
-| 0x000 | 6 | MAC address |
+| 0x0D8 | 6 | MAC address (USB variant) |
 | 0x00E | 1 | Antenna TX path config |
 | 0x00F | 1 | Antenna RX path config |
 | 0x010 | 1 | RFE type (0–6) |
