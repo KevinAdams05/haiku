@@ -96,7 +96,17 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	if (status != B_OK)
 		goto cleanup;
 
-	// Step 4: Write the firmware payload via page-based register writes
+	// Step 4: Reset the checksum accumulator — writing 1 to the checksum
+	// report bit (write-1-to-clear) resets the hardware's running checksum
+	// so it starts fresh for the new firmware data. Without this, the MCU
+	// computes a wrong checksum and never reports success.
+	{
+		uint8 mcuCtrl = fRegisterIO->Read8(kRegMcuFwDl);
+		fRegisterIO->Write8(kRegMcuFwDl,
+			mcuCtrl | (uint8)kMcuFwDlChksumRpt);
+	}
+
+	// Step 5: Write the firmware payload via page-based register writes
 	dprintf(RTL8814AU_DRIVER_NAME ": writing firmware "
 		"(%" B_PRIu32 " bytes, %" B_PRIu32 " pages)\n",
 		fPayloadSize, (fPayloadSize + kFwPageSize - 1) / kFwPageSize);
@@ -105,12 +115,12 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	if (status != B_OK)
 		goto cleanup;
 
-	// Step 5: Disable download mode
+	// Step 6: Disable download mode
 	status = _DisableDownloadMode();
 	if (status != B_OK)
 		goto cleanup;
 
-	// Step 6: Poll until firmware signals ready
+	// Step 7: Poll until firmware signals ready
 	status = _PollForReady();
 	if (status != B_OK)
 		goto cleanup;
@@ -224,34 +234,42 @@ RTL8814AUFirmware::_ValidateHeader()
 
 /*! Enable firmware download mode: set the download enable bit and
     reset the MCU so we can safely write to its memory.
+
+    Uses 8-bit register writes to avoid accidentally clobbering adjacent
+    bytes in the MCU control register (some bits are write-1-to-clear).
+
     Matches _FWDownloadEnable_8814A(enable=true) in the reference driver.
 */
 status_t
 RTL8814AUFirmware::_EnableDownloadMode()
 {
-	// Set firmware download enable (bit 0 of REG_MCUFWDL)
-	uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
-	ctrl |= kMcuFwDlEn;
-	status_t status = fRegisterIO->Write32(kRegMcuFwDl, ctrl);
+	// Set firmware download enable (bit 0 of byte 0 at REG_MCUFWDL)
+	uint8 ctrl = fRegisterIO->Read8(kRegMcuFwDl);
+	ctrl |= 0x01;	// MCUFWDL_EN
+	status_t status = fRegisterIO->Write8(kRegMcuFwDl, ctrl);
 	if (status != B_OK)
 		return status;
 
-	// Reset MCU (clear bit 19 — MCU running flag)
-	ctrl = fRegisterIO->Read32(kRegMcuFwDl);
-	ctrl &= ~kMcuRst8051;
-	return fRegisterIO->Write32(kRegMcuFwDl, ctrl);
+	// Reset MCU: clear bit 3 of byte 2 (= bit 19 of the 32-bit register).
+	// Writing to byte 2 at offset +2 avoids disturbing byte 0's W1C bits.
+	uint8 mcuByte2 = fRegisterIO->Read8(kRegMcuFwDl + 2);
+	mcuByte2 &= ~0x08;	// Clear MCU running (bit 3 of byte 2)
+	return fRegisterIO->Write8(kRegMcuFwDl + 2, mcuByte2);
 }
 
 
 /*! Disable firmware download mode after transfer is complete.
+
+    Uses 8-bit register writes matching the reference driver.
     Matches _FWDownloadEnable_8814A(enable=false) in the reference driver.
 */
 status_t
 RTL8814AUFirmware::_DisableDownloadMode()
 {
-	uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
-	ctrl &= ~kMcuFwDlEn;
-	return fRegisterIO->Write32(kRegMcuFwDl, ctrl);
+	// Clear firmware download enable (bit 0 of byte 0)
+	uint8 ctrl = fRegisterIO->Read8(kRegMcuFwDl);
+	ctrl &= ~0x01;	// Clear MCUFWDL_EN
+	return fRegisterIO->Write8(kRegMcuFwDl, ctrl);
 }
 
 
@@ -293,11 +311,13 @@ RTL8814AUFirmware::_PageWriteFirmware(const uint8* data, uint32 size)
 status_t
 RTL8814AUFirmware::_WritePage(uint32 page, const uint8* data, uint32 size)
 {
-	// Select page number in bits [18:16] of REG_MCUFWDL
-	uint32 ctrl = fRegisterIO->Read32(kRegMcuFwDl);
-	ctrl = (ctrl & ~kMcuFwDlPageMask)
-		| ((page & 0x07) << kMcuFwDlPageShift);
-	status_t status = fRegisterIO->Write32(kRegMcuFwDl, ctrl);
+	// Select page number in bits [2:0] of byte 2 at REG_MCUFWDL (= bits
+	// [18:16] of the 32-bit register). Use 8-bit write to byte 2 only,
+	// matching the reference driver's _PageWrite_8814A() which avoids
+	// disturbing byte 0's write-1-to-clear bits.
+	uint8 byte2 = fRegisterIO->Read8(kRegMcuFwDl + 2);
+	byte2 = (byte2 & 0xF8) | (uint8)(page & 0x07);
+	status_t status = fRegisterIO->Write8(kRegMcuFwDl + 2, byte2);
 	if (status != B_OK)
 		return status;
 
