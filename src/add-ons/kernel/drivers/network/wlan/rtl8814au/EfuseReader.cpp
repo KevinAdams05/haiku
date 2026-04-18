@@ -77,6 +77,19 @@ RTL8814AUEfuseReader::ReadEfuseMap()
 	}
 
 	fMapValid = true;
+
+	// Dump key EFUSE regions for debugging
+	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x00E] antenna=%02x\n",
+		fMap[kEfuseAntennaConfig]);
+	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x010] rfe=%02x\n",
+		fMap[kEfuseRfeType]);
+	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x100] thermal=%02x\n",
+		fMap[kEfuseThermalMeter]);
+	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x107..0x10C] MAC: "
+		"%02x:%02x:%02x:%02x:%02x:%02x\n",
+		fMap[0x107], fMap[0x108], fMap[0x109],
+		fMap[0x10A], fMap[0x10B], fMap[0x10C]);
+
 	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map read successfully\n");
 	return B_OK;
 }
@@ -148,10 +161,16 @@ RTL8814AUEfuseReader::ChannelPlan() const
 
 /*! Read a single byte from the physical EFUSE via the indirect access
     register. The hardware provides a register-based interface:
-      1. Write the address to kRegEfuseCtrl[17:8]
-      2. Set the read request bit
-      3. Poll until the valid bit is set
-      4. Read the data from kRegEfuseCtrl[7:0]
+      1. Read current EFUSE_CTRL register (preserve mode/control bits)
+      2. Set address in bits [17:8]
+      3. Clear the valid bit (bit 31) to trigger a new read cycle
+      4. Write back to start the read
+      5. Poll until the valid bit is set (hardware signals data ready)
+      6. Read the data from bits [7:0]
+
+    Reference: ReadEFuseByte() in the Realtek reference driver — the
+    read-modify-write preserves control bits while clearing the valid
+    bit triggers a fresh EFUSE cell read.
 
     \param address  Physical EFUSE address (0–1023)
     \param value    Output: the byte read
@@ -160,11 +179,19 @@ RTL8814AUEfuseReader::ChannelPlan() const
 status_t
 RTL8814AUEfuseReader::_ReadByte(uint16 address, uint8* value)
 {
-	// Write address and trigger read
-	uint32 ctrl = (address << kEfuseCtrlAddr_Shift) & kEfuseCtrlAddr_Mask;
+	// Read current register value to preserve control/mode bits
+	uint32 ctrl = fRegisterIO->Read32(kRegEfuseCtrl);
+
+	// Set address field (bits [17:8]), preserving other bits
+	ctrl &= ~kEfuseCtrlAddr_Mask;
+	ctrl |= (address << kEfuseCtrlAddr_Shift) & kEfuseCtrlAddr_Mask;
+
+	// Clear the valid bit (bit 31) — this triggers a new read cycle
+	ctrl &= ~kEfuseCtrlValid;
+
 	fRegisterIO->Write32(kRegEfuseCtrl, ctrl);
 
-	// Poll for valid bit
+	// Poll for valid bit — hardware sets it when data is ready
 	status_t status = fRegisterIO->PollFor32(kRegEfuseCtrl,
 		kEfuseCtrlValid, kEfuseCtrlValid, 100, 10);
 	if (status != B_OK) {
@@ -174,7 +201,7 @@ RTL8814AUEfuseReader::_ReadByte(uint16 address, uint8* value)
 		return B_TIMED_OUT;
 	}
 
-	// Extract the data byte
+	// Extract the data byte from bits [7:0]
 	uint32 result = fRegisterIO->Read32(kRegEfuseCtrl);
 	*value = (uint8)(result & kEfuseCtrlData_Mask);
 	return B_OK;

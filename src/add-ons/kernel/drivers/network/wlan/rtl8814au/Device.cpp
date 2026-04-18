@@ -529,6 +529,11 @@ RTL8814AUDevice::_ReadMacAddress()
 
 	memcpy(fMacAddress, efuseMap + kEfuseMacAddr, 6);
 
+	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE MAC at offset 0x%03x: "
+		"%02x:%02x:%02x:%02x:%02x:%02x\n",
+		kEfuseMacAddr, fMacAddress[0], fMacAddress[1], fMacAddress[2],
+		fMacAddress[3], fMacAddress[4], fMacAddress[5]);
+
 	// Sanity check — a zeroed or broadcast MAC is invalid
 	bool allZero = true;
 	bool allOnes = true;
@@ -543,8 +548,9 @@ RTL8814AUDevice::_ReadMacAddress()
 	bool isMulticast = (fMacAddress[0] & 0x01) != 0;
 
 	if (allZero || allOnes || isMulticast) {
-		dprintf(RTL8814AU_DRIVER_NAME ": invalid MAC address in EFUSE, "
-			"using random address\n");
+		dprintf(RTL8814AU_DRIVER_NAME ": invalid MAC address in EFUSE "
+			"(zero=%d ones=%d mcast=%d), using random address\n",
+			allZero, allOnes, isMulticast);
 		// Generate a locally-administered random MAC
 		fMacAddress[0] = 0x02;	// Locally administered, unicast
 		fMacAddress[1] = 0x81;
