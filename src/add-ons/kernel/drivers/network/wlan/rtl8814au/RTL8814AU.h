@@ -160,7 +160,9 @@ static const uint16 kSysFuncEnBBGlbRst		= (1 << 1);
 static const uint16 kSysFuncEnUSBA			= (1 << 2);
 static const uint16 kSysFuncEnUPLL			= (1 << 3);
 static const uint16 kSysFuncEnUSBD			= (1 << 4);
-static const uint16 kSysFuncEnCpuEn		= (1 << 12);  // Lexra 3081 MCU
+static const uint16 kSysFuncEnCpuEn		= (1 << 10);  // Lexra 3081 MCU
+	// BIT2 of byte 1 at REG_SYS_FUNC_EN+1 — matches _3081Disable8814A()
+	// in the reference driver (morrownr/8814au).
 static const uint16 kSysFuncEnDcore			= (1 << 13);
 static const uint16 kSysFuncEnELDR			= (1 << 14);
 static const uint16 kSysFuncEnHWPDN			= (1 << 15);
@@ -191,35 +193,95 @@ static const uint16 kRegMultiFuncCtrl		= 0x0068;
 // Register addresses — Firmware Control (0x0080 area)
 //
 // The RTL8814AU uses a Lexra 3081 MIPS-derived MCU. Firmware is loaded via
-// page-based register writes: the host selects a 4 KB page and writes data
-// to 0x1000–0x1FFF, then advances to the next page. After all pages are
-// written, the MCU validates a checksum and signals readiness.
+// IDDMA (Internal Data DMA): the host writes firmware data to the TX packet
+// buffer, then programs the DDMA engine to transfer it to the MCU's DMEM
+// and IRAM memory regions. The MCU is halted during transfer via
+// REG_SYS_FUNC_EN bit 12 (kSysFuncEnCpuEn) and resumed after.
 //
 // Reference: rtl8814a_hal_init.c — FirmwareDownload8814A(),
-//            _FWDownloadEnable_8814A(), _WriteFW_8814A(), _FWFreeToGo8814A()
+//            _FWDownloadEnable_8814A(), IDDMADownLoadFW_3081(),
+//            _3081Disable8814A(), _3081Enable8814A(), _FWFreeToGo8814A()
+//            in morrownr/8814au.
 // ---------------------------------------------------------------------------
 
 static const uint16 kRegMcuFwDl				= 0x0080;
 
-// kRegMcuFwDl bit definitions (32-bit register at 0x0080)
+// kRegMcuFwDl / REG_8051FW_CTRL_8814A bit definitions (32-bit at 0x0080)
 // Byte 0 (0x0080):
 static const uint32 kMcuFwDlEn				= (1 << 0);	// FW download enable
 static const uint32 kMcuFwDlRdy			= (1 << 1);	// Set by host after write
 static const uint32 kMcuFwDlChksumRpt		= (1 << 2);	// Checksum OK from MCU
-static const uint32 kMcuWintiniRdy			= (1 << 6);	// FW init complete
+static const uint32 kMcuMacIniRdy			= (1 << 3);	// MAC init ready
+static const uint32 kMcuBBIniRdy			= (1 << 4);	// BB init ready
+static const uint32 kMcuRFIniRdy			= (1 << 5);	// RF init ready
+static const uint32 kMcuWintiniRdy			= (1 << 6);	// FW init complete (8051)
+static const uint32 kMcuRamDlSel			= (1 << 7);	// RAM download select
+// Byte 1 (0x0081):
+static const uint32 kMcuFwDlChksumEn		= (1 << 12);	// Checksum report enable
+static const uint32 kMcuFwDlDisableSim		= (1 << 13);	// Disable simulation mode
+// Byte 1 high:
+static const uint32 kMcuCpuDlReady			= (1 << 15);	// Lexra 3081 ready — poll this
 // Byte 2 (0x0082):
 static const uint32 kMcuFwDlPageShift		= 16;			// Page number in [18:16]
 static const uint32 kMcuFwDlPageMask		= (0x07 << 16);
-static const uint32 kMcuRst8051			= (1 << 19);	// MCU running (clear=reset)
+static const uint32 kMcuRomDlEn			= (1 << 19);	// ROM download enable
 
-// Firmware page-based download constants
+// Firmware page-based download constants (for writing to TX packet buffer)
 static const uint16 kFwStartAddress			= 0x1000;	// Write target per page
 static const uint32 kFwPageSize				= 4096;		// 4 KB per page
-static const uint32 kFwHeaderSize			= 32;		// RT_8814A_FIRMWARE_HDR
+static const uint32 kFwHeaderSize			= 64;		// Lexra 3081 firmware header
 
-// Firmware polling
-static const uint32 kFirmwarePollAttempts	= 6000;
-static const bigtime_t kFirmwarePollDelay	= 5;		// 5 µs between polls
+// Firmware ready polling — _FWFreeToGo8814A() uses 100 × 50 ms = 5 sec
+static const uint32 kFirmwareReadyAttempts	= 100;
+static const bigtime_t kFirmwareReadyDelay	= 50000;	// 50 ms between polls
+
+// DDMA polling — IDDMADownLoadFW_3081() uses 20 × 1 ms
+static const uint32 kDDMAPollAttempts		= 20;
+static const bigtime_t kDDMAPollDelay		= 1000;		// 1 ms between polls
+
+// Beacon valid polling — WaitDownLoadRSVDPageOK_3081() uses 20 × 50 µs
+static const uint32 kBcnValidPollAttempts	= 200;
+static const bigtime_t kBcnValidPollDelay	= 50;		// 50 µs between polls
+
+
+// ---------------------------------------------------------------------------
+// Register addresses — IDDMA / DDMA (0x1200 area)
+//
+// The chip's internal Data DMA engine copies data between the TX packet
+// buffer and the Lexra 3081 MCU's OCP memory regions (DMEM and IRAM).
+// Used during firmware loading to transfer firmware sections from the
+// TX buffer (where the host wrote them) to the MCU memory.
+//
+// Reference: rtl8814a_spec.h — REG_DDMA_CH0SA, REG_DDMA_CH0DA,
+//            REG_DDMA_CH0CTRL in morrownr/8814au.
+// ---------------------------------------------------------------------------
+
+static const uint16 kRegDDMACh0SA			= 0x1200;	// Source address
+static const uint16 kRegDDMACh0DA			= 0x1204;	// Destination address
+static const uint16 kRegDDMACh0Ctrl			= 0x1208;	// Control (length + flags)
+
+// DDMA control register bit definitions
+static const uint32 kDDMAChOwn				= (1 << 31);	// Start transfer
+static const uint32 kDDMAChksumEn			= (1 << 29);	// Enable checksum
+static const uint32 kDDMAChksumFail			= (1 << 27);	// Checksum failed
+static const uint32 kDDMAChksumRst			= (1 << 25);	// Reset checksum state
+static const uint32 kDDMAChksumCont			= (1 << 24);	// Continue checksum accum
+static const uint32 kDDMALenMask			= 0x0001FFFF;	// Transfer length [16:0]
+
+// CPU DMEM configuration (DDMA reset control)
+static const uint16 kRegCpuDmemCon			= 0x1080;
+
+// CPU DMEM status bits (in REG_CPU_DMEM_CON_8814A)
+static const uint32 kImemDlRdy				= (1 << 3);	// IRAM download complete
+static const uint32 kDmemDlRdy				= (1 << 5);	// DMEM download complete
+
+// OCP base addresses for Lexra 3081 memory regions
+static const uint32 kOcpBaseIMem			= 0x00000000;	// Instruction RAM
+static const uint32 kOcpBaseDMem			= 0x00200000;	// Data memory
+static const uint32 kOcpBaseTxBuf			= 0x18780000;	// TX packet buffer
+
+// Beacon valid bit — byte at kRegFIFOPage + 1, bit 7
+static const uint8 kBcnValidBit				= (1 << 7);
 
 
 // ---------------------------------------------------------------------------

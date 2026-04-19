@@ -32,15 +32,15 @@ System function enable register. Controls power to major chip blocks.
 | 3 | FEN_UPLL | USB PLL enable |
 | 4 | FEN_USBD | USB digital enable |
 | 8 | FEN_DIO_PCIE | PCIe digital I/O |
-| 10 | FEN_PCIEA | PCIe analog enable |
+| 10 | FEN_CPUEN | CPU (Lexra 3081) enable — **critical for firmware load** |
 | 11 | FEN_PPLL | PCIe PLL enable |
-| 12 | FEN_CPUEN | CPU (Lexra 3081) enable — **critical for firmware load** |
 | 13 | FEN_DCORE | Digital core power |
 | 14 | FEN_ELDR | EEPROM loader enable |
 | 15 | FEN_HWPDN | Hardware power down |
 
-**Driver usage:** Bit 12 (offset byte +1, bit 2) is cleared before firmware DMA
-and set after to start the MCU.
+**Driver usage:** Bit 10 (offset byte +1, BIT2) is cleared before firmware DMA
+and set after to start the MCU. Matches `_3081Disable8814A()` / `_3081Enable8814A()`
+in the reference driver (morrownr/8814au).
 
 ### REG_AFE_CTRL (0x0028, 32-bit, RW)
 
@@ -82,12 +82,18 @@ Firmware download control register.
 
 | Bit | Name | Description |
 |-----|------|-------------|
-| 0 | FWDL_EN | Enable firmware download mode |
-| 3 | MCUFWDL_RDY | Firmware download ready (set by MCU) |
-| 6 | WINTINI_RDY | Firmware init complete |
-| 12 | FWDL_CHKSUM_RPT | Checksum report enable |
+| 0 | MCUFWDL_EN | Enable firmware download mode |
+| 1 | MCUFWDL_RDY | Set by host to signal MCU |
+| 2 | FWDL_CHKSUM_RPT | Checksum OK from MCU (W1C) |
+| 3 | MACINI_RDY | MAC init ready |
+| 4 | BBINI_RDY | BB init ready |
+| 5 | RFINI_RDY | RF init ready |
+| 6 | WINTINI_RDY | FW init complete (8051-era, not used on Lexra 3081) |
+| 7 | RAM_DL_SEL | RAM download select |
+| 12 | FWDL_CHKSUM_EN | Checksum report enable |
 | 13 | FWDL_DISABLE_SIM | Disable simulation mode |
-| 15 | CPU_DL_READY | **MCU ready after FW load — poll this** |
+| 15 | CPU_DL_READY | **Lexra 3081 MCU ready after FW load — poll this** |
+| 19 | ROM_DLEN | ROM download enable |
 
 ### REG_HMEBOX_0..3 (0x01D0–0x01DC, 32-bit each, WO)
 
