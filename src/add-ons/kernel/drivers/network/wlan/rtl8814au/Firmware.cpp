@@ -432,6 +432,16 @@ RTL8814AUFirmware::_PollForReady()
 		fRegisterIO->Write8(kRegMcuFwDl, byte0);
 	}
 
+	// Release MCU from reset so firmware can execute.
+	// Bit 19 of REG_MCUFWDL (bit 3 of byte 2) controls MCU run state:
+	// 0 = held in reset (set in _EnableDownloadMode), 1 = running.
+	// Use 8-bit write to byte 2 to avoid touching W1C bits in byte 0.
+	{
+		uint8 byte2 = fRegisterIO->Read8(kRegMcuFwDl + 2);
+		byte2 |= 0x08;		// Set bit 3 = bit 19 (release MCU from reset)
+		fRegisterIO->Write8(kRegMcuFwDl + 2, byte2);
+	}
+
 	// Stage 3: Wait for firmware to signal init complete
 	attempts = 0;
 	while (attempts < kFirmwarePollAttempts) {
