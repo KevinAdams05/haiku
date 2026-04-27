@@ -988,6 +988,12 @@ RTL8814AUDevice::Control(void* cookie, uint32 op, void* args, size_t length)
 		return B_DEV_NOT_READY;
 
 	switch (op) {
+		case ETHER_INIT:
+			// ethernet_up() calls this before ETHER_GETADDR.  Treated
+			// as obsolete in headers but the network stack still issues
+			// it; returning anything < B_OK aborts interface bring-up.
+			return B_OK;
+
 		case ETHER_GETADDR:
 		{
 			// Return our MAC address
