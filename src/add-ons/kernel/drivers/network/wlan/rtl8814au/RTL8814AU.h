@@ -135,6 +135,13 @@ enum TxQueueSelect {
 // management. These registers must be configured before any other block.
 // ---------------------------------------------------------------------------
 
+// Auto Power State FSM and clock control — the APS FSM transitions the
+// chip between power states (card-emu, active, LPS, etc.).  The power-on
+// sequence triggers a card-emu → active transition to bring the MAC
+// register domain (0x0100+) online.
+static const uint16 kRegApsFsmco			= 0x0004;	// APS_FSMCO (16-bit)
+static const uint16 kRegSysClkr			= 0x0006;	// SYS_CLKR (16-bit)
+
 // System isolation and function enable
 static const uint16 kRegSysCfg				= 0x00F0;
 static const uint16 kRegSysFuncEn			= 0x0002;
@@ -226,10 +233,33 @@ static const uint32 kMcuFwDlPageShift		= 16;			// Page number in [18:16]
 static const uint32 kMcuFwDlPageMask		= (0x07 << 16);
 static const uint32 kMcuRomDlEn			= (1 << 19);	// ROM download enable
 
-// Firmware page-based download constants (for writing to TX packet buffer)
-static const uint16 kFwStartAddress			= 0x1000;	// Write target per page
-static const uint32 kFwPageSize				= 4096;		// 4 KB per page
+// Firmware beacon-queue download constants.
+//
+// On the 3081-MCU chip, firmware is NOT written via control transfers to
+// the old 8051-style TX buffer window at 0x1000. That path permanently
+// locks the 0x1200+ DDMA register space.  Instead, the reference driver
+// submits firmware data as a TX packet on the beacon bulk OUT endpoint
+// (pipe index kTxQueueBCN = 2, QSEL = kQslBeacon = 0x10), waits for the
+// BcnValid acknowledgement bit in REG_FIFOPAGE_CTRL_2+1 (bit 7), then
+// triggers an IDDMA from the beacon's location in the TX packet buffer
+// to the MCU's DMEM / IRAM regions.
+//
+// Reference: HalROMDownloadFWRSVDPage8814A(), SetDownLoadFwRsvdPagePkt_8814A(),
+//            WaitDownLoadRSVDPageOK_3081() in zebulon2/rtl8814au.
+static const uint32 kFwPageSize				= 0x1000;	// 4 KB per IDDMA chunk
 static const uint32 kFwHeaderSize			= 64;		// Lexra 3081 firmware header
+static const uint32 kFwTxBufPageSize		= 128;		// PAGE_SIZE_8814A
+static const uint32 kQslBeacon				= 0x10;		// QSLT_BEACON in TX desc
+static const uint32 kFwTxDescOffset			= 40;		// TX desc bytes before payload
+	// MEMOffsetInTxPacketBuf = OCPBASE_TXBUF_3081 + (bndy*128) + 40
+
+// TX packet buffer page boundary.  The reference driver derives this as
+//   TXPKT_PGNUM_8814A = (2048 - BCNQ_PAGE_NUM_8814 - WOWLAN_PAGE_NUM_8814)
+// but for the USB firmware-download path (no WOWLAN reserved pages yet)
+// it ends up at the same value used by the beacon-valid test:
+//   TXPKT_PGNUM_8814A_WMM = 0x07F5 (2037)
+// We use this as the beacon queue boundary during firmware download.
+static const uint16 kFwTxPktBufBoundary		= 0x07F5;
 
 // Firmware ready polling — _FWFreeToGo8814A() uses 100 × 50 ms = 5 sec
 static const uint32 kFirmwareReadyAttempts	= 100;
@@ -271,9 +301,13 @@ static const uint32 kDDMALenMask			= 0x0001FFFF;	// Transfer length [16:0]
 // CPU DMEM configuration (DDMA reset control)
 static const uint16 kRegCpuDmemCon			= 0x1080;
 
-// CPU DMEM status bits (in REG_CPU_DMEM_CON_8814A)
-static const uint32 kImemDlRdy				= (1 << 3);	// IRAM download complete
-static const uint32 kDmemDlRdy				= (1 << 5);	// DMEM download complete
+// Firmware download status bits — written to byte 0 of REG_8051FW_CTRL_8814A
+// (0x0080) by the IDDMA transfer handler after each section completes.
+// The reference driver writes these in IDDMADownLoadFW_3081() when ls==TRUE.
+static const uint8 kImemDlRdy				= (1 << 3);	// IRAM download ready
+static const uint8 kImemChksumOk			= (1 << 4);	// IRAM checksum passed
+static const uint8 kDmemDlRdy				= (1 << 5);	// DMEM download ready
+static const uint8 kDmemChksumOk			= (1 << 6);	// DMEM checksum passed
 
 // OCP base addresses for Lexra 3081 memory regions
 static const uint32 kOcpBaseIMem			= 0x00000000;	// Instruction RAM
@@ -293,8 +327,35 @@ static const uint8 kBcnValidBit				= (1 << 7);
 
 static const uint16 kRegCR					= 0x0100;
 static const uint16 kRegPBP				= 0x0104;
-static const uint16 kRegTrxDmaCfg			= 0x010C;
+static const uint16 kRegTrxDmaCfg			= 0x010C;	// REG_TRXDMA_CTRL
 static const uint16 kRegTrxFF_BNDY			= 0x0114;
+
+// REG_TRXDMA_CTRL (0x010C) — maps internal hardware queues (VO/VI/BE/BK/
+// MG/HI/CM) to USB endpoint priority levels (HIGH/NORMAL/LOW).  Each
+// queue has a 2-bit priority field; the three priorities correspond to
+// the three enumerated bulk OUT endpoints in 3EP configurations.
+//
+// Bit layout (from hal_com_reg.h in morrownr/8814au):
+//   [4:5]   VOQ    [6:7]   VIQ    [8:9]   BEQ    [10:11] BKQ
+//   [12:13] MGQ    [14:15] HIQ    [16:17] CMQ
+//
+// Priority values (QUEUE_* in the reference):
+enum QueuePriority {
+	kQueueExtra		= 0,
+	kQueueLow		= 1,
+	kQueueNormal	= 2,
+	kQueueHigh		= 3,
+};
+
+static const uint32 kTxDmaVOQShift			= 4;
+static const uint32 kTxDmaVIQShift			= 6;
+static const uint32 kTxDmaBEQShift			= 8;
+static const uint32 kTxDmaBKQShift			= 10;
+static const uint32 kTxDmaMGQShift			= 12;
+static const uint32 kTxDmaHIQShift			= 14;
+static const uint32 kTxDmaCMQShift			= 16;
+static const uint32 kTxDmaQMask				= 0x3;
+static const uint32 kTxDmaPriorityBit2		= (1 << 2);
 
 // CR (command register) bit definitions
 static const uint32 kCR_HCI_TxDMA_En		= (1 << 0);
@@ -337,18 +398,50 @@ static const uint16 kRegHMEBoxExt[kH2CMailboxCount]
 // ---------------------------------------------------------------------------
 
 static const uint16 kRegRQPN				= 0x0200;
-static const uint16 kRegFIFOPage			= 0x0204;
-static const uint16 kRegTDectrl				= 0x0208;
+static const uint16 kRegFIFOPage			= 0x0204;	// REG_FIFOPAGE_CTRL_2
+static const uint16 kRegAutoLLT				= 0x0208;	// REG_AUTO_LLT_8814A
 static const uint16 kRegTxDmaOffsetChk		= 0x020C;
+
+// REG_AUTO_LLT_8814A: writing BIT0 triggers hardware Link-List Table
+// initialization.  The chip builds the per-queue page linked-list in the
+// TX packet buffer; bit 0 auto-clears when init completes.  Must run
+// before any bulk OUT transfer — otherwise the MAC cannot move frames
+// from the USB FIFO into the beacon/data queues.
+static const uint8 kAutoLLTTrigger			= (1 << 0);
+static const uint32 kAutoLLTPollAttempts	= 200;
+static const bigtime_t kAutoLLTPollDelay	= 50000;	// 50 ms between polls
 static const uint16 kRegTxDmaStatus			= 0x0210;
 static const uint16 kRegRQPN_NPQ			= 0x0214;
 
-// Per-queue page counts — initial allocation from reference driver
-static const uint32 kTxPubQPages			= 219;
-static const uint32 kTxHiQPages				= 0;
-static const uint32 kTxLoQPages				= 0;
-static const uint32 kTxNorQPages			= 0;
-static const uint32 kTxExQPages				= 0;
+// 8814A-specific page-allocation registers.  Unlike the older 8192-series
+// that used REG_RQPN (0x0200), the 8814A uses a 5-register bank at
+// 0x0230–0x0240 (one 32-bit register per queue) plus a commit register
+// at 0x022C.  Writing 0x80000000 to REG_RQPN_CTRL_2 latches the per-
+// queue values into the hardware.  See _InitQueueReservedPage_8814AUsb()
+// in morrownr/8814au, hal/rtl8814a/usb/usb_halinit.c.
+static const uint16 kRegRQPN_Ctrl_2			= 0x022C;
+static const uint16 kRegFIFOPage_Info_1		= 0x0230;	// HPQ page count
+static const uint16 kRegFIFOPage_Info_2		= 0x0234;	// LPQ page count
+static const uint16 kRegFIFOPage_Info_3		= 0x0238;	// NPQ page count
+static const uint16 kRegFIFOPage_Info_4		= 0x023C;	// EPQ page count
+static const uint16 kRegFIFOPage_Info_5		= 0x0240;	// PUB page count
+static const uint32 kRQPNCommit				= 0x80000000;
+
+// Per-queue page counts matching morrownr/8814au HPQ/LPQ/NPQ/EPQ_PGNUM
+// (all 20, decimal) and the computed PUB_PGNUM = 2040 - 4*20 = 1960.
+// Total reserves 8 pages for beacon (BCNQ_PAGE_NUM_8814) out of 2048.
+static const uint32 kPageNumHPQ				= 20;
+static const uint32 kPageNumLPQ				= 20;
+static const uint32 kPageNumNPQ				= 20;
+static const uint32 kPageNumEPQ				= 20;
+static const uint32 kPageNumPUB				= 1960;
+
+// Boundary registers — describe where the beacon queue starts in the
+// TX packet buffer.  Matches REG_TXPKTBUF_BCNQ_BDNY_8814A (0x0424),
+// REG_MGQ_PGBNDY_8814A (0x047A), and REG_FIFOPAGE_CTRL_2 (0x0204).
+static const uint16 kRegTxPktBufBcnQBdy		= 0x0424;
+static const uint16 kRegMgQPgBndy			= 0x047A;
+// (kRegFIFOPage = 0x0204 is also the boundary register)
 
 
 // ---------------------------------------------------------------------------
@@ -376,6 +469,11 @@ static const uint16 kRegSpecSIFS			= 0x0428;
 static const uint16 kRegMacSpecSIFS			= 0x042C;
 static const uint16 kRegSIFS_CTX			= 0x0514;
 static const uint16 kRegSIFS_TRX			= 0x0516;
+
+// FWHW TX queue control — byte +2 bit 6 controls "real beacon" processing.
+// The reference driver clears this bit during firmware download so the
+// beacon packet we submit is kept in TX packet buffer (not air-transmitted).
+static const uint16 kRegFwhwTxqCtrl			= 0x0420;
 
 static const uint16 kRegARFR0				= 0x0444;
 static const uint16 kRegARFR1				= 0x044C;

@@ -87,6 +87,28 @@ public:
 									SecurityType secType,
 									bool isBroadcast);
 
+	// Send a firmware download chunk on the beacon bulk OUT endpoint.
+	//
+	// Wraps the data in a minimal 40-byte TX descriptor with QSEL =
+	// kQslBeacon (0x10), then submits it synchronously on pipe 2
+	// (kTxQueueBCN).  Used by the firmware loader; the chunk lands in
+	// the chip's TX packet buffer at a location determined by the
+	// beacon-queue page boundary, from which IDDMA transfers it to
+	// MCU memory.
+	//
+	// \param data    Firmware bytes (up to kFwPageSize = 4 KB)
+	// \param length  Number of bytes in \a data
+	// \return B_OK when the USB transfer completes successfully.
+	status_t					SendFirmwareChunk(const uint8* data,
+										uint32 length);
+
+	// Clear ENDPOINT_HALT on the beacon-queue bulk OUT pipe (pipe 0).
+	// Hypothesis: the chip's EP2 may be in a STALL state after a prior
+	// session or control-transfer sequence, which would explain why the
+	// first firmware bulk OUT transfer hangs with no chip-side activity.
+	// Called right before the firmware download begins.
+	status_t					ClearBeaconPipeHalt();
+
 	// Cancel all pending TX transfers. Called during shutdown or
 	// device removal to clean up in-flight USB operations.
 	void						CancelAll();

@@ -182,6 +182,131 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 }
 
 
+/*! Send a single firmware download chunk synchronously on the beacon
+    bulk OUT endpoint.
+
+    Builds a minimal beacon-queue TX descriptor (QSEL = kQslBeacon = 0x10,
+    FS | LS | OWN, Offset = 40, BMC set) and submits it via queue_bulk()
+    on pipe 0, then blocks on the completion semaphore until the USB
+    transfer finishes.
+
+    Pipe 0 is the first enumerated bulk OUT endpoint — in the reference
+    driver's 3EP non-WMM mapping (_ThreeOutPipeMapping), BCN, MGT, HIGH,
+    and TXCMD queues all route to RtOutPipe[0] (QUEUE_HIGH priority,
+    typically EP2).  Data queues use pipes 1–2.
+
+    The chip writes the packet into its TX packet buffer at a location
+    determined by the beacon-queue page boundary, then sets BcnValid
+    (bit 7 of REG_FIFOPAGE_CTRL_2+1) to acknowledge.  The firmware
+    loader waits on that bit before triggering IDDMA.
+
+    Reference: SetDownLoadFwRsvdPagePkt_8814A() and _ThreeOutPipeMapping()
+    in zebulon2/rtl8814au (hal/hal_com.c).
+*/
+status_t
+RTL8814AUTxPath::SendFirmwareChunk(const uint8* data, uint32 length)
+{
+	if (fInitStatus != B_OK)
+		return fInitStatus;
+
+	if (length == 0 || length > kFwPageSize)
+		return B_BAD_VALUE;
+
+	uint32 totalLength = kTxDescSize + length;
+	if (totalLength > kUsbTxBufferSize)
+		return B_BAD_VALUE;
+
+	// Use pipe 0 (first enumerated bulk OUT) — matches the reference
+	// 3EP mapping where BCN and MGT go to RtOutPipe[0].  Slot 0 of
+	// that pipe's transfer pool is used; firmware load is single-
+	// threaded so no contention is expected.
+	const uint32 pipeIndex = 0;
+	const uint32 slotIndex = pipeIndex * kTxTransfersPerQueue;
+
+	MutexLocker locker(fLock);
+
+	TxTransfer* transfer = &fTransfers[slotIndex];
+	if (transfer->inUse) {
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware TX slot busy\n");
+		return B_BUSY;
+	}
+	transfer->inUse = true;
+
+	// Build minimal beacon-queue TX descriptor.
+	uint8* desc = transfer->buffer;
+	memset(desc, 0, kTxDescSize);
+
+	// DWORD 0: packet length, descriptor offset = 40, BMC, FS, LS, OWN
+	uint32 dword0 = (length & kTxDescPktLen_Mask)
+		| ((kTxDescSize << kTxDescOffset_Shift) & kTxDescOffset_Mask)
+		| kTxDescBMC | kTxDescFS | kTxDescLS | kTxDescOWN;
+
+	// DWORD 1: MACID=0, QSEL = 0x10 (QSLT_BEACON)
+	uint32 dword1 = ((uint32)kQslBeacon << kTxDescQueueSel_Shift)
+		& kTxDescQueueSel_Mask;
+
+	uint32* desc32 = reinterpret_cast<uint32*>(desc);
+	desc32[0] = B_HOST_TO_LENDIAN_INT32(dword0);
+	desc32[1] = B_HOST_TO_LENDIAN_INT32(dword1);
+	// DWORDs 2-9 remain zero — no aggregation, sequence, rate, or power
+
+	memcpy(desc + kTxDescSize, data, length);
+
+	// Clear the completion semaphore of any stale signals from prior TX.
+	sem_info info;
+	if (get_sem_info(transfer->completionSem, &info) == B_OK
+		&& info.count > 0) {
+		acquire_sem_etc(transfer->completionSem, info.count,
+			B_RELATIVE_TIMEOUT, 0);
+	}
+
+	locker.Unlock();
+
+	status_t status = fUSBModule->queue_bulk(fBulkOut[pipeIndex],
+		transfer->buffer, totalLength, _TxCallback, transfer);
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware queue_bulk failed: %s\n",
+			strerror(status));
+		MutexLocker relock(fLock);
+		transfer->inUse = false;
+		return status;
+	}
+
+	// Wait for the USB transfer to complete (1 second is generous for a
+	// 4 KB bulk transfer at USB 2.0).  The callback clears inUse and
+	// releases the semaphore.
+	status = acquire_sem_etc(transfer->completionSem, 1,
+		B_RELATIVE_TIMEOUT, 1000000);
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware TX completion wait "
+			"timed out (%" B_PRIu32 " bytes)\n", length);
+		fUSBModule->cancel_queued_transfers(fBulkOut[pipeIndex]);
+		return B_TIMED_OUT;
+	}
+
+	return B_OK;
+}
+
+
+/*! Clear ENDPOINT_HALT on the beacon-queue bulk OUT pipe.
+
+    If the chip's EP2 is in a STALL state (possibly a residue from a
+    previous session or triggered by a malformed control transfer
+    during probe), no bulk OUT transfer will ever be drained.  The
+    standard USB recovery is a CLEAR_FEATURE(ENDPOINT_HALT) request,
+    which resets the endpoint's halt condition and data toggle.
+*/
+status_t
+RTL8814AUTxPath::ClearBeaconPipeHalt()
+{
+	status_t status = fUSBModule->clear_feature(fBulkOut[0],
+		USB_FEATURE_ENDPOINT_HALT);
+	dprintf(RTL8814AU_DRIVER_NAME ": clear_feature(ENDPOINT_HALT) on "
+		"bulk OUT pipe 0 returned %s\n", strerror(status));
+	return status;
+}
+
+
 /*! Cancel all pending TX transfers. Called during device shutdown or
     removal. After this returns, no callbacks will fire.
 */

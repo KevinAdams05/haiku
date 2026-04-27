@@ -126,6 +126,10 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 		return;
 	}
 
+	// Firmware loader submits download chunks on the beacon bulk OUT
+	// endpoint via the TX path, so it needs a pointer to it.
+	fFirmware->SetTxPath(fTxPath);
+
 	// Create the RX path — needs bulk IN endpoint handle
 	fRxPath = new(std::nothrow) RTL8814AURxPath(fRegisterIO, gUSBModule,
 		device, fBulkIn);
@@ -298,9 +302,18 @@ RTL8814AUDevice::_SetupEndpoints()
     This brings the chip from a powered-down state to fully operational:
       1. Power-on sequence (register writes to bring chip out of reset)
       2. Read EFUSE (MAC address, calibration data)
-      3. Load firmware (DMEM + IRAM to Lexra 3081)
-      4. Initialize MAC registers (enable DMA, set buffer sizes)
-      5. PHY/RF initialization (4-path setup — TODO)
+      3. Initialize MAC registers (queue page allocation, DMA enables)
+      4. Load firmware (DMEM + IRAM to Lexra 3081 via beacon queue)
+      5. Write MAC address to hardware
+      6. PHY/RF initialization (4-path setup — TODO)
+
+    MAC init precedes firmware download because the 3081-MCU firmware
+    loader submits its chunks via the beacon bulk OUT endpoint — the
+    chip needs TX packet buffer pages allocated (via REG_RQPN) and
+    MAC TX enabled before it will drain those bulk OUT transfers.
+    This matches the reference driver's init order: MAC queue config
+    is set up in _InitQueueReservedPage_8814AU() before
+    FirmwareDownload8814A() is called.
 
     \return B_OK on success, or the first error encountered.
 */
@@ -338,18 +351,21 @@ RTL8814AUDevice::_InitHardware()
 		fMacAddress[0], fMacAddress[1], fMacAddress[2],
 		fMacAddress[3], fMacAddress[4], fMacAddress[5]);
 
-	// Step 3: Load firmware — transfer DMEM and IRAM to the Lexra 3081
-	status = fFirmware->Load(RTL8814AU_FIRMWARE_PATH);
+	// Step 3: Initialize MAC — allocate TX packet buffer pages to queues
+	// and enable DMA engines.  MUST happen before firmware load because
+	// the 3081-MCU loader submits firmware chunks via the beacon bulk
+	// OUT endpoint, which requires the beacon queue to have pages.
+	status = _InitMAC();
 	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": firmware load failed: %s\n",
+		dprintf(RTL8814AU_DRIVER_NAME ": MAC init failed: %s\n",
 			strerror(status));
 		return status;
 	}
 
-	// Step 4: Initialize MAC — enable DMA engines, set buffer sizes
-	status = _InitMAC();
+	// Step 4: Load firmware — transfer DMEM and IRAM to the Lexra 3081
+	status = fFirmware->Load(RTL8814AU_FIRMWARE_PATH);
 	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": MAC init failed: %s\n",
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware load failed: %s\n",
 			strerror(status));
 		return status;
 	}
@@ -409,6 +425,21 @@ RTL8814AUDevice::_PowerOnSequence()
 {
 	dprintf(RTL8814AU_DRIVER_NAME ": starting power-on sequence\n");
 
+	// Undocumented Realtek workaround: set bit 1 of register 0x10C2
+	// before the power-on FSM transition.  Comment in the reference
+	// driver attributes this to "YX sugguested 2014.06.03".  Without
+	// this the chip's bulk OUT endpoint FIFOs do not accept data —
+	// every firmware TX hangs at the USB layer with the chip never
+	// pulling the packet.  (Observed symptom prior to adding this.)
+	uint8 reg10C2 = fRegisterIO->Read8(0x10C2);
+	fRegisterIO->Write8(0x10C2, reg10C2 | 0x02);
+	dprintf(RTL8814AU_DRIVER_NAME ": 0x10C2 workaround (before=0x%02x, "
+		"wrote=0x%02x)\n", (unsigned)reg10C2, (unsigned)(reg10C2 | 0x02));
+
+	// ---------------------------------------------------------------
+	// Phase 1: Analog and clock setup (AFE, crystal, PLL)
+	// ---------------------------------------------------------------
+
 	// Enable analog front-end and PLL
 	fRegisterIO->Write8(kRegApsRsvd, 0x00);
 
@@ -445,7 +476,68 @@ RTL8814AUDevice::_PowerOnSequence()
 	sysFuncEn |= kSysFuncEnBBRSTB | kSysFuncEnBBGlbRst | kSysFuncEnDcore;
 	fRegisterIO->Write16(kRegSysFuncEn, sysFuncEn);
 
-	dprintf(RTL8814AU_DRIVER_NAME ": power-on sequence complete\n");
+	// ---------------------------------------------------------------
+	// Phase 2: APS FSM power-on transition (Rtl8814A_NIC_ENABLE_FLOW)
+	//
+	// The RTL8814AU has an Auto Power State (APS) FSM controlled via
+	// register 0x0004-0x0005 (APS_FSMCO). Triggering the card-emu-to-
+	// active transition brings the MAC register domain (0x0100+) online.
+	// Without this, MAC registers return 0xEA (powered-off domain).
+	//
+	// Matches HalPwrSeqCmdParsing(Rtl8814A_NIC_ENABLE_FLOW) from
+	// the reference driver's _InitPowerOn_8814AU().
+	// ---------------------------------------------------------------
+
+	// Step 1: Clear APS_FSMCO byte 1 bit 2 (= overall bit 10)
+	fRegisterIO->MaskedWrite8(kRegApsFsmco + 1, 0x04, 0x00);
+
+	// Step 2: Poll SYS_CLKR (0x0006) until bit 1 is set (clock ready)
+	status_t status = fRegisterIO->PollFor8(kRegSysClkr, 0x02, 0x02,
+		200, 500);
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": SYS_CLKR clock ready timeout\n");
+		return status;
+	}
+
+	// Step 3: Clear APS_FSMCO byte 1 bit 3 (= overall bit 11)
+	fRegisterIO->MaskedWrite8(kRegApsFsmco + 1, 0x08, 0x00);
+
+	// Step 4: Clear SYS_CFG (0x00F0) bit 7
+	fRegisterIO->MaskedWrite8(kRegSysCfg, 0x80, 0x00);
+
+	// Step 5: Configure FW_CTRL byte 1 (0x0081): set bit 5, clear bit 4
+	fRegisterIO->MaskedWrite8(kRegMcuFwDl + 1, 0x30, 0x20);
+
+	// Step 6: Set APS_FSMCO byte 1 bit 0 (= overall bit 8) to trigger
+	// the card-emu-to-active power state transition
+	fRegisterIO->MaskedWrite8(kRegApsFsmco + 1, 0x01, 0x01);
+
+	// Step 7: Poll APS_FSMCO byte 1 until bit 0 clears (transition done)
+	status = fRegisterIO->PollFor8(kRegApsFsmco + 1, 0x01, 0x00,
+		200, 500);
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": APS FSM transition timeout\n");
+		return status;
+	}
+
+	// ---------------------------------------------------------------
+	// Phase 3: Enable MAC DMA engines
+	//
+	// Now that the MAC domain is online, enable the DMA engines,
+	// protocol engine, scheduler, and security engine via REG_CR.
+	// This matches _InitPowerOn_8814AU() in the reference driver.
+	// ---------------------------------------------------------------
+
+	fRegisterIO->Write16(kRegCR, 0x0000);
+	uint16 crValue = fRegisterIO->Read16(kRegCR);
+	crValue |= kCR_HCI_TxDMA_En | kCR_HCI_RxDMA_En
+		| kCR_TxDMA_En | kCR_RxDMA_En
+		| kCR_Protocol_En | kCR_Schedule_En
+		| kCR_EnsecCAMTx | kCR_EnsecCAMRx;
+	fRegisterIO->Write16(kRegCR, crValue);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": power-on sequence complete "
+		"(REG_CR=0x%04x)\n", fRegisterIO->Read16(kRegCR));
 	return B_OK;
 }
 
@@ -461,17 +553,42 @@ RTL8814AUDevice::_InitMAC()
 {
 	dprintf(RTL8814AU_DRIVER_NAME ": initializing MAC\n");
 
-	// Enable all MAC sub-blocks via the command register
-	uint32 crValue = kCR_HCI_TxDMA_En | kCR_HCI_RxDMA_En
-		| kCR_TxDMA_En | kCR_RxDMA_En
-		| kCR_Protocol_En | kCR_Schedule_En
-		| kCR_MAC_TX_En | kCR_MAC_RX_En
-		| kCR_EnsecCAMTx | kCR_EnsecCAMRx;
-	fRegisterIO->Write32(kRegCR, crValue);
+	// NOTE: CR is already set to 0x603F by _PowerOnSequence (HCI_TxDMA |
+	// HCI_RxDMA | TxDMA | RxDMA | Protocol | Schedule | ENSEC | CALTMR).
+	// DO NOT clobber it here and DO NOT enable MAC_TX_EN/MAC_RX_EN yet —
+	// the MAC state machine needs firmware before those can be set.
+	// Enabling them prematurely causes the USB TX DMA to stall (the chip
+	// never pulls bulk OUT frames off EP2), which is the exact symptom
+	// we were debugging.  MAC_TX_EN/MAC_RX_EN get enabled post-firmware.
 
-	// Configure TX page boundary (public queue gets all pages)
-	fRegisterIO->Write32(kRegRQPN,
-		kTxPubQPages | (kTxPubQPages << 8) | (1 << 31));
+	uint16 crBefore = fRegisterIO->Read16(kRegCR);
+	dprintf(RTL8814AU_DRIVER_NAME ": CR entering _InitMAC = 0x%04x\n",
+		(unsigned)crBefore);
+
+	// Allocate TX packet buffer pages across the six internal queues.
+	// This must happen before any bulk OUT transfer to the chip; without
+	// it the hardware has no pages to buffer incoming frames and USB
+	// transfers stall waiting for the chip to pull them off the wire.
+	status_t status = _InitPageAllocation();
+	if (status != B_OK)
+		return status;
+
+	// LLT auto-init was tried at REG_AUTO_LLT (0x0208) BIT0 but found to
+	// be a no-op on 8814A — the chip auto-builds the link-list as part
+	// of the RQPN_CTRL_2 commit.  Skip the trigger here.
+
+	// Program the queue-to-endpoint priority map so the three USB bulk
+	// OUT endpoints (pipe 0 = HIGH, pipe 1 = NORMAL, pipe 2 = LOW) route
+	// to the right internal queues.  Without this, the chip doesn't know
+	// where frames on EP2/EP3/EP4 belong.
+	status = _InitQueuePriority();
+	if (status != B_OK)
+		return status;
+
+	// Clear REG_TXPAUSE — the reference driver ensures transmission is
+	// not paused before the first bulk OUT.  Without this, the chip will
+	// accept but not dispatch frames.
+	fRegisterIO->Write8(kRegTxPause, 0x00);
 
 	// Set AMPDU aggregation parameters
 	fRegisterIO->Write8(kRegAmpduMaxTime, kAmpduMaxTime);
@@ -485,11 +602,150 @@ RTL8814AUDevice::_InitMAC()
 	fRegisterIO->Write32(kRegRCR, rxFilter);
 
 	// Enable DMA engines
-	status_t status = _EnableDMA();
+	status = _EnableDMA();
 	if (status != B_OK)
 		return status;
 
 	dprintf(RTL8814AU_DRIVER_NAME ": MAC initialization complete\n");
+	return B_OK;
+}
+
+
+/*! Allocate TX packet buffer pages across the six internal hardware
+    queues and set the beacon-queue boundary.
+
+    The 8814A uses a 5-register bank at 0x0230–0x0240 (one per queue)
+    plus a commit register at 0x022C.  Writing kRQPNCommit (0x80000000)
+    to REG_RQPN_CTRL_2 latches the per-queue values into hardware.
+
+    Page counts match the reference driver's HPQ/LPQ/NPQ/EPQ_PGNUM
+    values (20 each) and PUB = 2048 - BCNQ(8) - 4*20 = 1960.
+
+    Reference: _InitQueueReservedPage_8814AUsb() in morrownr/8814au,
+               hal/rtl8814a/usb/usb_halinit.c.
+*/
+status_t
+RTL8814AUDevice::_InitPageAllocation()
+{
+	// Write per-queue page counts
+	fRegisterIO->Write32(kRegFIFOPage_Info_1, kPageNumHPQ);
+	fRegisterIO->Write32(kRegFIFOPage_Info_2, kPageNumLPQ);
+	fRegisterIO->Write32(kRegFIFOPage_Info_3, kPageNumNPQ);
+	fRegisterIO->Write32(kRegFIFOPage_Info_4, kPageNumEPQ);
+	fRegisterIO->Write32(kRegFIFOPage_Info_5, kPageNumPUB);
+
+	// Commit the per-queue allocation into hardware
+	fRegisterIO->Write32(kRegRQPN_Ctrl_2, kRQPNCommit);
+
+	// Set the beacon-queue page boundary.  All boundary registers get the
+	// same value — the TX packet buffer region above this boundary is
+	// reserved for beacon / reserved-page use.  The reference driver also
+	// writes REG_FIFOPAGE_CTRL_2 (0x0204) as the BCN0 head and
+	// REG_FIFOPAGE_CTRL_2 + 2 (0x0206) as the BCN1 head.
+	fRegisterIO->Write16(kRegTxPktBufBcnQBdy, kFwTxPktBufBoundary);
+	fRegisterIO->Write16(kRegMgQPgBndy, kFwTxPktBufBoundary);
+	fRegisterIO->Write16(kRegFIFOPage, kFwTxPktBufBoundary);
+	fRegisterIO->Write16(kRegFIFOPage + 2, kFwTxPktBufBoundary);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": page allocation set "
+		"(HPQ=%u LPQ=%u NPQ=%u EPQ=%u PUB=%u bndy=0x%04x)\n",
+		(unsigned)kPageNumHPQ, (unsigned)kPageNumLPQ,
+		(unsigned)kPageNumNPQ, (unsigned)kPageNumEPQ,
+		(unsigned)kPageNumPUB, (unsigned)kFwTxPktBufBoundary);
+	return B_OK;
+}
+
+
+/*! Trigger the hardware Link-List Table auto-init and wait for it to
+    complete.
+
+    The LLT is the per-queue linked-list of page descriptors inside the
+    chip's TX packet buffer.  Until the hardware builds it, the MAC
+    cannot move frames from the USB FIFO into any queue — bulk OUT
+    transfers sit in the USB endpoint without being consumed, and the
+    host sees every TX time out.
+
+    Writing bit 0 of REG_AUTO_LLT triggers the build; the chip clears
+    bit 0 when the linked-list is ready.  We poll up to ~10 seconds
+    (200 × 50 ms) as the reference driver does.
+
+    Reference: InitLLTTable8814A() in morrownr/8814au,
+               hal/rtl8814a/rtl8814a_hal_init.c.
+*/
+status_t
+RTL8814AUDevice::_InitLLTTable()
+{
+	uint8 before = fRegisterIO->Read8(kRegAutoLLT);
+	uint8 wrote = before | kAutoLLTTrigger;
+	fRegisterIO->Write8(kRegAutoLLT, wrote);
+	uint8 readback = fRegisterIO->Read8(kRegAutoLLT);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": LLT trigger "
+		"(before=0x%02x, wrote=0x%02x, readback=0x%02x)\n",
+		(unsigned)before, (unsigned)wrote, (unsigned)readback);
+
+	// If the write didn't take effect (readback still shows bit 0 clear),
+	// the register is probably read-only or mapped elsewhere.  Don't
+	// falsely claim success — report and let the caller decide.
+	if ((readback & kAutoLLTTrigger) == 0 && (before & kAutoLLTTrigger) == 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": LLT trigger write had no effect "
+			"— register may not be REG_AUTO_LLT on this chip\n");
+		return B_OK;	// Continue — maybe LLT auto-runs on this variant
+	}
+
+	for (uint32 i = 0; i < kAutoLLTPollAttempts; i++) {
+		uint8 llt = fRegisterIO->Read8(kRegAutoLLT);
+		if ((llt & kAutoLLTTrigger) == 0) {
+			dprintf(RTL8814AU_DRIVER_NAME ": LLT init complete "
+				"(%u polls, REG_AUTO_LLT=0x%02x)\n",
+				(unsigned)i, (unsigned)llt);
+			return B_OK;
+		}
+		snooze(kAutoLLTPollDelay);
+	}
+
+	uint8 final = fRegisterIO->Read8(kRegAutoLLT);
+	dprintf(RTL8814AU_DRIVER_NAME ": LLT init TIMED OUT "
+		"(REG_AUTO_LLT=0x%02x)\n", (unsigned)final);
+	return B_TIMED_OUT;
+}
+
+
+/*! Program REG_TRXDMA_CTRL (0x010C) to map internal hardware queues to
+    the three USB bulk OUT endpoint priority levels.
+
+    The 3EP non-WMM mapping matches the reference driver:
+      VOQ → HIGH   (pipe 0, EP2)
+      VIQ → NORMAL (pipe 1, EP3)
+      BEQ → LOW    (pipe 2, EP4)
+      BKQ → LOW
+      MGQ → HIGH   (so BCN/MGT/firmware-chunks land on EP2)
+      HIQ → HIGH
+
+    Reference: _InitNormalChipRegPriority_8814AUsb() in morrownr/8814au,
+               hal/rtl8814a/usb/usb_halinit.c.
+*/
+status_t
+RTL8814AUDevice::_InitQueuePriority()
+{
+	// Preserve the lower 3 bits of the existing register value
+	uint16 existing = fRegisterIO->Read16(kRegTrxDmaCfg);
+	uint16 preserved = existing & 0x07;
+
+	uint16 priorityMap
+		= (uint16)(kQueueHigh   << kTxDmaVOQShift)
+		| (uint16)(kQueueNormal << kTxDmaVIQShift)
+		| (uint16)(kQueueLow    << kTxDmaBEQShift)
+		| (uint16)(kQueueLow    << kTxDmaBKQShift)
+		| (uint16)(kQueueHigh   << kTxDmaMGQShift)
+		| (uint16)(kQueueHigh   << kTxDmaHIQShift);
+
+	uint16 value = preserved | priorityMap | (uint16)kTxDmaPriorityBit2;
+	fRegisterIO->Write16(kRegTrxDmaCfg, value);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": queue priority set "
+		"(REG_TRXDMA_CTRL: 0x%04x -> 0x%04x)\n",
+		(unsigned)existing, (unsigned)value);
 	return B_OK;
 }
 

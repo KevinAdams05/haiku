@@ -353,9 +353,11 @@ RTL8814AURegisterIO::_VendorWrite(uint16 address, const void* buffer,
 	if (!fDevicePresent)
 		return B_DEV_NOT_READY;
 
+	status_t lastStatus = B_ERROR;
+
 	for (uint32 attempt = 0; attempt < kMaxRetryCount; attempt++) {
 		size_t actualLength = length;
-		status_t status = fUSBModule->send_request(
+		lastStatus = fUSBModule->send_request(
 			fDevice,
 			USB_REQTYPE_VENDOR | USB_REQTYPE_DEVICE_OUT,	// 0x40
 			kVendorRequestCode,								// bRequest = 0x05
@@ -365,14 +367,15 @@ RTL8814AURegisterIO::_VendorWrite(uint16 address, const void* buffer,
 			(void*)buffer,
 			&actualLength);
 
-		if (status == B_OK)
+		if (lastStatus == B_OK)
 			return B_OK;
 
 		if (attempt < kMaxRetryCount - 1)
-			snooze(1000);
+			snooze(2000);
 	}
 
 	dprintf(RTL8814AU_DRIVER_NAME ": _VendorWrite(0x%04x, %u) failed after "
-		"%" B_PRIu32 " attempts\n", address, length, kMaxRetryCount);
+		"%" B_PRIu32 " attempts (last status=0x%08" B_PRIx32 ")\n",
+		address, length, kMaxRetryCount, (uint32)lastStatus);
 	return B_IO_ERROR;
 }

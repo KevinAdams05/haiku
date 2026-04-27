@@ -33,6 +33,7 @@
 
 
 class RTL8814AURegisterIO;
+class RTL8814AUTxPath;
 
 
 // Firmware binary header — 64 bytes at the start of the .bin file.
@@ -95,6 +96,12 @@ public:
 									RTL8814AURegisterIO* registerIO);
 								~RTL8814AUFirmware();
 
+	// Inject the TX path used to submit firmware chunks on the beacon
+	// bulk OUT endpoint.  Must be called before Load() — the firmware
+	// loader cannot operate without it.
+	void						SetTxPath(RTL8814AUTxPath* txPath)
+									{ fTxPath = txPath; }
+
 	// Load firmware from the given filesystem path. Reads the file,
 	// validates the header, and transfers DMEM + IRAM sections to the
 	// chip via IDDMA. Returns B_OK on success.
@@ -114,17 +121,22 @@ private:
 	void						_ResumeMCU();
 	void						_ResetDDMA();
 
-	// Write a firmware section to the TX packet buffer via page-based
-	// register writes, then IDDMA to the given OCP destination address.
+	// Configure the beacon queue for firmware reserved-page submission.
+	// Matches the preamble of HalROMDownloadFWRSVDPage8814A() in the
+	// reference driver.
+	status_t					_PrepareBeaconQueue();
+
+	// Transfer a firmware section to the chip.  Each chunk is submitted
+	// as a beacon-queue TX packet, acknowledged via the BcnValid bit,
+	// then IDDMA'd from the beacon's location in the TX packet buffer
+	// to the target OCP region (DMEM or IRAM).
 	status_t					_TransferSection(const uint8* data,
 									uint32 size, uint32 ocpDestAddr,
 									bool resetChecksum);
 
-	// Page-write helpers (write data to TX buffer at 0x1000)
-	status_t					_PageWriteToTxBuffer(const uint8* data,
-									uint32 size);
-	status_t					_WritePage(uint32 page, const uint8* data,
-									uint32 size);
+	// Wait for the chip to acknowledge a beacon-queue firmware chunk by
+	// setting bit 7 of REG_FIFOPAGE_CTRL_2+1 (BcnValidReg).
+	status_t					_WaitForRsvdPageOK();
 
 	// IDDMA: trigger DMA from TX buffer to MCU memory, verify checksum
 	status_t					_IDDMATransfer(uint32 srcAddr,
@@ -135,6 +147,7 @@ private:
 	status_t					_PollForReady();
 
 	RTL8814AURegisterIO*		fRegisterIO;
+	RTL8814AUTxPath*			fTxPath;
 
 	// Firmware file contents (allocated during _ReadFile, freed after
 	// successful load since the data is now in chip memory)

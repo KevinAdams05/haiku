@@ -6,7 +6,7 @@
  *
  * The RTL8814AU contains a Lexra 3081 MIPS-derived MCU (not the 8051 found
  * in older Realtek chips). This requires a fundamentally different firmware
- * loading mechanism: IDDMA (Internal Data DMA).
+ * loading mechanism: beacon-queue TX + IDDMA (Internal Data DMA).
  *
  * Loading sequence:
  *   1. Read firmware binary from filesystem
@@ -14,22 +14,29 @@
  *   3. Enable firmware download mode (set MCUFWDL_EN)
  *   4. Halt the MCU via REG_SYS_FUNC_EN bit 12 (kSysFuncEnCpuEn)
  *   5. Reset the DDMA engine
- *   6. Transfer DMEM section: write to TX buffer, IDDMA to OCP 0x00200000
- *   7. Transfer IRAM section: write to TX buffer, IDDMA to OCP 0x00000000
- *   8. Resume the MCU via REG_SYS_FUNC_EN bit 12
- *   9. Disable download mode
- *  10. Poll CPU_DL_READY (bit 15 of REG_MCUFWDL) — 5 second timeout
+ *   6. Configure the beacon queue for reserved-page submission
+ *   7. For each DMEM chunk:
+ *        a. Submit chunk as beacon-queue TX packet (QSEL = 0x10)
+ *        b. Wait for BcnValid bit (REG_FIFOPAGE_CTRL_2 + 1, bit 7)
+ *        c. IDDMA from beacon's location in TX packet buffer to OCP DMEM
+ *   8. Repeat (7) for IRAM chunks, targeting OCP IRAM
+ *   9. Resume the MCU via REG_SYS_FUNC_EN bit 12
+ *  10. Disable download mode
+ *  11. Poll CPU_DL_READY (bit 15 of REG_MCUFWDL) — 5 second timeout
  *
- * The IDDMA mechanism:
- *   - Host writes firmware data to the TX packet buffer via page-based
- *     register writes to 0x1000 (same as 8051 method)
- *   - DDMA channel 0 (registers 0x1200–0x1208) copies from the TX buffer
- *     (OCP address 0x18780000) to the MCU's DMEM or IRAM region
- *   - The DDMA engine computes and verifies a running checksum
+ * Why beacon-queue?
+ *   The 8051-style control-transfer write to 0x1000 permanently locks the
+ *   0x1200+ DDMA register window on the 3081-MCU chip: after any such write
+ *   all reads of the DDMA registers return 0xffffffff and all writes
+ *   time out.  The reference driver avoids this by submitting firmware as
+ *   a TX packet on the beacon bulk OUT endpoint — the chip accepts it via
+ *   the normal TX path and IDDMA then reads from the beacon's offset in
+ *   the TX packet buffer.
  *
- * Reference: rtl8814a_hal_init.c — FirmwareDownload8814A(),
+ * Reference: rtl8814a_hal_init.c — HalROMDownloadFWRSVDPage8814A(),
+ *            SetDownLoadFwRsvdPagePkt_8814A(), WaitDownLoadRSVDPageOK_3081(),
  *            IDDMADownLoadFW_3081(), _3081Disable8814A(), _3081Enable8814A(),
- *            _FWFreeToGo8814A() in morrownr/8814au.
+ *            _FWFreeToGo8814A() in zebulon2/rtl8814au.
  */
 
 #include "Firmware.h"
@@ -44,11 +51,13 @@
 #include <OS.h>
 
 #include "RegisterIO.h"
+#include "TxPath.h"
 
 
 RTL8814AUFirmware::RTL8814AUFirmware(RTL8814AURegisterIO* registerIO)
 	:
 	fRegisterIO(registerIO),
+	fTxPath(NULL),
 	fData(NULL),
 	fDataSize(0),
 	fLoaded(false),
@@ -82,6 +91,16 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	if (fLoaded)
 		return B_OK;
 
+	if (fTxPath == NULL) {
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware load requested without "
+			"TxPath — call SetTxPath() first\n");
+		return B_NO_INIT;
+	}
+
+	// Saved register values preserved for restoration on cleanup paths.
+	uint8 savedCR1 = 0;
+	uint8 savedTxqCtrl2 = 0;
+
 	dprintf(RTL8814AU_DRIVER_NAME ": loading firmware from %s\n",
 		firmwarePath);
 
@@ -114,8 +133,33 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	// Step 5: Reset the DDMA engine to clear any stale state
 	_ResetDDMA();
 
-	// Step 6: Transfer DMEM section — write to TX buffer, then IDDMA to
-	// the MCU's data memory region at OCP address 0x00200000.
+	// Step 5b: Enable the TX DMA subsystem so the DDMA registers (0x1200+)
+	// are accessible.  The reference driver sets REG_CR byte 1 bit 0
+	// ("SW beacon DMA enable") in HalROMDownloadFWRSVDPage8814A().
+	savedCR1 = fRegisterIO->Read8(kRegCR + 1);
+	fRegisterIO->Write8(kRegCR + 1, savedCR1 | 0x01);
+
+	// Step 5c: Save REG_FWHW_TXQ_CTRL + 2 so we can restore bit 6
+	// after firmware download.
+	savedTxqCtrl2 = fRegisterIO->Read8(kRegFwhwTxqCtrl + 2);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": TX DMA enabled for IDDMA "
+		"(CR+1: 0x%02x -> 0x%02x, DDMA_CH0_CTRL=0x%08" B_PRIx32 ")\n",
+		savedCR1, savedCR1 | 0x01,
+		fRegisterIO->Read32(kRegDDMACh0Ctrl));
+
+	// Step 6: Configure the beacon queue for reserved-page submission.
+	status = _PrepareBeaconQueue();
+	if (status != B_OK)
+		goto cleanup_resume;
+
+	// Step 6b: Clear any ENDPOINT_HALT condition on the beacon bulk OUT
+	// pipe.  If the pipe is stalled, no bulk OUT data will ever drain;
+	// firmware TX would hang waiting for the chip to pull from EP2.
+	fTxPath->ClearBeaconPipeHalt();
+
+	// Step 7: Transfer DMEM section — submit chunks as beacon-queue TX,
+	// then IDDMA from the beacon's TX packet buffer offset to OCP DMEM.
 	dprintf(RTL8814AU_DRIVER_NAME ": transferring DMEM "
 		"(%" B_PRIu32 " bytes)\n", fDmemSize);
 
@@ -124,8 +168,7 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	if (status != B_OK)
 		goto cleanup_resume;
 
-	// Step 7: Transfer IRAM section — write to TX buffer, then IDDMA to
-	// the MCU's instruction memory at OCP address 0x00000000.
+	// Step 8: Transfer IRAM section — same pattern, target OCP IRAM.
 	dprintf(RTL8814AU_DRIVER_NAME ": transferring IRAM "
 		"(%" B_PRIu32 " bytes)\n", fIramSize);
 
@@ -134,15 +177,36 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	if (status != B_OK)
 		goto cleanup_resume;
 
-	// Step 8: Resume the MCU — firmware will begin executing
+	// Step 8b: If both DMEM and IRAM checksums passed, set bit 6 of
+	// byte 1 at REG_8051FW_CTRL (0x0081) to signal the MCU that firmware
+	// is ready.  This matches the end of HalROMDownloadFWRSVDPage8814A().
+	{
+		uint8 fwCtrl0 = fRegisterIO->Read8(kRegMcuFwDl);
+		if ((fwCtrl0 & kDmemChksumOk) && (fwCtrl0 & kImemChksumOk)) {
+			uint8 fwCtrl1 = fRegisterIO->Read8(kRegMcuFwDl + 1);
+			fRegisterIO->Write8(kRegMcuFwDl + 1, fwCtrl1 | 0x40);
+			dprintf(RTL8814AU_DRIVER_NAME ": both checksums OK, "
+				"firmware ready flag set\n");
+		} else {
+			dprintf(RTL8814AU_DRIVER_NAME ": WARNING: checksum flags "
+				"not both set (byte0=0x%02x)\n", fwCtrl0);
+		}
+	}
+
+	// Step 8c: Restore REG_FWHW_TXQ_CTRL + 2 and CR byte 1 to their
+	// pre-download values.
+	fRegisterIO->Write8(kRegFwhwTxqCtrl + 2, savedTxqCtrl2);
+	fRegisterIO->Write8(kRegCR + 1, savedCR1);
+
+	// Step 9: Resume the MCU — firmware will begin executing
 	_ResumeMCU();
 
-	// Step 9: Disable download mode
+	// Step 10: Disable download mode
 	status = _DisableDownloadMode();
 	if (status != B_OK)
 		goto cleanup;
 
-	// Step 10: Poll until MCU signals CPU_DL_READY (bit 15)
+	// Step 11: Poll until MCU signals CPU_DL_READY (bit 15)
 	status = _PollForReady();
 	if (status != B_OK)
 		goto cleanup;
@@ -158,8 +222,10 @@ RTL8814AUFirmware::Load(const char* firmwarePath)
 	return B_OK;
 
 cleanup_resume:
-	// If we failed during transfer, resume the MCU before cleaning up
-	// to avoid leaving it in a halted state
+	// If we failed during transfer, restore saved registers and resume
+	// the MCU before cleaning up.
+	fRegisterIO->Write8(kRegFwhwTxqCtrl + 2, savedTxqCtrl2);
+	fRegisterIO->Write8(kRegCR + 1, savedCR1);
 	_ResumeMCU();
 
 cleanup:
@@ -294,37 +360,37 @@ RTL8814AUFirmware::_ValidateHeader()
 /*! Enable firmware download mode: set the download enable bit and configure
     the control register for firmware transfer.
 
-    Uses 8-bit register writes to avoid accidentally clobbering adjacent
-    bytes in the MCU control register (some bits are write-1-to-clear).
-
-    Matches _FWDownloadEnable_8814A(enable=true) in the reference driver.
+    The reference driver's _FWDownloadEnable_8814A(enable=TRUE) does a 16-bit
+    read/write to REG_8051FW_CTRL_8814A (0x0080), clearing most bits and
+    setting only bit 0 (MCUFWDL_EN) and bit 13 (FWDL_DISABLE_SIM).
+    This also clears CPU_DL_READY (bit 15) so it can be polled after loading.
 */
 status_t
 RTL8814AUFirmware::_EnableDownloadMode()
 {
-	// The reference driver's _FWDownloadEnable_8814A(enable=TRUE) operates
-	// on byte 2 (0x0082) of REG_8051FW_CTRL_V1, not byte 1.
-	// Step 1: Clear bit 4 and set bit 5 of byte 2 (bits 20/21 overall)
-	uint8 byte2 = fRegisterIO->Read8(kRegMcuFwDl + 2);
-	byte2 &= ~(uint8)0x10;		// Clear bit 4 of byte 2 (= bit 20 overall)
-	byte2 |= (uint8)0x20;		// Set bit 5 of byte 2 (= bit 21 overall)
-	status_t status = fRegisterIO->Write8(kRegMcuFwDl + 2, byte2);
+	// Read the 16-bit control register (bytes 0-1 at 0x0080-0x0081).
+	// The reference driver clears all bits except 12-13, then clears 12
+	// and sets 13, plus sets bit 0 for download enable.
+	uint16 ctrl = fRegisterIO->Read16(kRegMcuFwDl);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": enable download mode "
+		"(REG_MCUFWDL before=0x%04x)\n", ctrl);
+
+	ctrl &= 0x3000;			// Keep only bits 12-13
+	ctrl &= ~(uint16)0x1000;	// Clear bit 12 (FWDL_CHKSUM_EN)
+	ctrl |= (uint16)0x2000;	// Set bit 13 (FWDL_DISABLE_SIM)
+	ctrl |= (uint16)0x0001;	// Set bit 0 (MCUFWDL_EN)
+
+	status_t status = fRegisterIO->Write16(kRegMcuFwDl, ctrl);
 	if (status != B_OK)
 		return status;
 
-	// Step 2: Set firmware download enable (bit 0 of byte 0)
-	uint8 byte0 = fRegisterIO->Read8(kRegMcuFwDl);
-	byte0 |= (uint8)kMcuFwDlEn;
-	status = fRegisterIO->Write8(kRegMcuFwDl, byte0);
-	if (status != B_OK)
-		return status;
+	// Verify the write took effect
+	uint16 verify = fRegisterIO->Read16(kRegMcuFwDl);
+	dprintf(RTL8814AU_DRIVER_NAME ": enable download mode "
+		"(REG_MCUFWDL after=0x%04x)\n", verify);
 
-	// Step 3: Set ROM_DL_EN (bit 3 of byte 2 = bit 19 overall).
-	// This enables the DDMA engine to access MCU memory regions.
-	// Without this, DDMA register reads return garbage (0xeaeaeaea).
-	byte2 = fRegisterIO->Read8(kRegMcuFwDl + 2);
-	byte2 |= (uint8)0x08;		// Set bit 3 of byte 2 (= bit 19, ROM_DL_EN)
-	return fRegisterIO->Write8(kRegMcuFwDl + 2, byte2);
+	return B_OK;
 }
 
 
@@ -382,39 +448,123 @@ RTL8814AUFirmware::_ResumeMCU()
 
 /*! Reset the DDMA engine by toggling bit 16 of REG_CPU_DMEM_CON_8814A.
     This clears any stale DMA state from a previous firmware load attempt.
+
+    IMPORTANT: The reference driver's sequence is CLEAR bit 16 first, then
+    SET bit 16.  Bit 16 must be LEFT SET for the DDMA registers (0x1200+) to
+    be accessible.  Previous versions had this inverted, leaving DDMA in
+    reset and causing reads of 0xeaeaeaea from the DDMA control register.
 */
 void
 RTL8814AUFirmware::_ResetDDMA()
 {
 	uint32 val = fRegisterIO->Read32(kRegCpuDmemCon);
-	fRegisterIO->Write32(kRegCpuDmemCon, val | (1 << 16));
-	snooze(100);
-	fRegisterIO->Write32(kRegCpuDmemCon, val & ~(1 << 16));
 
-	dprintf(RTL8814AU_DRIVER_NAME ": DDMA engine reset\n");
+	dprintf(RTL8814AU_DRIVER_NAME ": DDMA reset "
+		"(REG_CPU_DMEM_CON before=0x%08" B_PRIx32 ")\n", val);
+
+	// Clear bit 16 first (assert reset), then set it (release reset).
+	// Matches the reference driver: clear → set, leaving DDMA active.
+	fRegisterIO->Write32(kRegCpuDmemCon, val & ~(1 << 16));
+	snooze(100);
+	fRegisterIO->Write32(kRegCpuDmemCon, val | (1 << 16));
+
+	// Verify DDMA registers are now accessible (should NOT be 0xeaeaeaea)
+	uint32 ddmaCtrl = fRegisterIO->Read32(kRegDDMACh0Ctrl);
+	dprintf(RTL8814AU_DRIVER_NAME ": DDMA engine reset "
+		"(DDMA_CH0_CTRL=0x%08" B_PRIx32 ")\n", ddmaCtrl);
 }
 
 
-// Maximum bytes per USB vendor control transfer for firmware data.
-// Matches MAX_REG_BOLCK_SIZE (254) used by _BlockWrite_8814A() in the
-// reference driver's USB path.
-static const uint32 kFwUsbBlockSize = 254;
+/*! Configure the beacon queue so firmware chunks submitted on the beacon
+    bulk OUT endpoint land in the reserved-page area of the TX packet
+    buffer instead of being transmitted as real beacons.
+
+    Matches the preamble of HalROMDownloadFWRSVDPage8814A():
+      - Set REG_CR + 1 bit 0 (SW beacon DMA)            [done in Load()]
+      - Clear BCN_CTRL bit 3, set bit 4                  (disable beacon TX)
+      - Clear REG_FWHW_TXQ_CTRL + 2 bit 6                ("not a real beacon")
+      - Program beacon page boundary into REG_FIFOPAGE_CTRL_2
+      - Clear BcnValid (bit 7 of REG_FIFOPAGE_CTRL_2+1)  (via write-1)
+*/
+status_t
+RTL8814AUFirmware::_PrepareBeaconQueue()
+{
+	// Disable real beacon transmission: BCN_CTRL bit 3 (DIS_TSF_UDT),
+	// bit 4 controls beacon processing.  Match SetBcnCtrlReg semantics:
+	// clear BIT3 and set BIT4.
+	uint8 bcnCtrl = fRegisterIO->Read8(kRegBcnCtrl);
+	bcnCtrl &= ~(uint8)(1 << 3);
+	bcnCtrl |= (uint8)(1 << 4);
+	fRegisterIO->Write8(kRegBcnCtrl, bcnCtrl);
+
+	// Mark "not a real beacon" so the chip doesn't try to transmit the
+	// firmware packet: clear bit 6 of REG_FWHW_TXQ_CTRL + 2.
+	uint8 txqCtrl2 = fRegisterIO->Read8(kRegFwhwTxqCtrl + 2);
+	txqCtrl2 &= ~(uint8)(1 << 6);
+	fRegisterIO->Write8(kRegFwhwTxqCtrl + 2, txqCtrl2);
+
+	// Program the beacon-queue page boundary.  The firmware chunk will
+	// land at OCPBASE_TXBUF_3081 + (bndy * 128) + 40 (after the TX desc).
+	fRegisterIO->Write16(kRegFIFOPage, kFwTxPktBufBoundary);
+
+	// Clear any stale BcnValid ack (bit 7 of REG_FIFOPAGE_CTRL_2 + 1)
+	// by writing 1 to it — standard write-1-to-clear convention.
+	uint8 bcnValid = fRegisterIO->Read8(kRegFIFOPage + 1);
+	fRegisterIO->Write8(kRegFIFOPage + 1, bcnValid | kBcnValidBit);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": beacon queue prepared "
+		"(bndy=0x%04x, BCN_CTRL=0x%02x, FWHW_TXQ+2=0x%02x)\n",
+		kFwTxPktBufBoundary, bcnCtrl, txqCtrl2);
+
+	return B_OK;
+}
 
 
-/*! Transfer a firmware section (DMEM or IRAM) to the chip.
+/*! Poll REG_FIFOPAGE_CTRL_2 + 1 bit 7 (BcnValid) until the chip sets it,
+    indicating it has accepted a firmware chunk into the TX packet buffer.
 
-    The section data is first written to the TX packet buffer via page-based
-    register writes to 0x1000, then the DDMA engine copies it from the TX
-    buffer to the target OCP address (DMEM or IRAM memory region).
+    Matches WaitDownLoadRSVDPageOK_3081() in the reference driver:
+    200 attempts × 50 µs = 10 ms total.  The ack bit is then cleared by
+    writing 1 to it, ready for the next chunk.
+*/
+status_t
+RTL8814AUFirmware::_WaitForRsvdPageOK()
+{
+	for (uint32 attempt = 0; attempt < kBcnValidPollAttempts; attempt++) {
+		uint8 reg = fRegisterIO->Read8(kRegFIFOPage + 1);
+		if (reg & kBcnValidBit) {
+			// Clear the ack so the next chunk can re-arm it.
+			fRegisterIO->Write8(kRegFIFOPage + 1, reg | kBcnValidBit);
+			return B_OK;
+		}
+		snooze(kBcnValidPollDelay);
+	}
 
-    For large sections, the data is split into 4 KB chunks. Each chunk is
-    written to page 0 of the TX buffer, then IDDMA'd to the destination
-    at an increasing offset.
+	dprintf(RTL8814AU_DRIVER_NAME ": BcnValid poll timed out "
+		"(REG_FIFOPAGE_CTRL_2+1=0x%02x)\n",
+		fRegisterIO->Read8(kRegFIFOPage + 1));
+	return B_TIMED_OUT;
+}
+
+
+/*! Transfer a firmware section (DMEM or IRAM) to the chip via beacon-queue
+    TX packets and IDDMA.
+
+    For each chunk:
+      1. SendFirmwareChunk() submits the chunk as a beacon-queue TX packet
+         on bulk OUT pipe 2 (QSEL = 0x10).
+      2. The chip parks the chunk in the TX packet buffer at offset
+         (kFwTxPktBufBoundary * 128) and sets BcnValid when done.
+      3. We wait for BcnValid via _WaitForRsvdPageOK().
+      4. IDDMA copies the chunk from its TX-buffer location (skipping the
+         40-byte TX descriptor) to the target OCP address.
 
     \param data           Pointer to the section data
     \param size           Section size in bytes
     \param ocpDestAddr    OCP base address (kOcpBaseDMem or kOcpBaseIMem)
     \param resetChecksum  True to reset the DDMA checksum accumulator
+
+    Matches the per-chunk loop inside HalROMDownloadFWRSVDPage8814A().
 */
 status_t
 RTL8814AUFirmware::_TransferSection(const uint8* data, uint32 size,
@@ -423,27 +573,38 @@ RTL8814AUFirmware::_TransferSection(const uint8* data, uint32 size,
 	if (size == 0)
 		return B_OK;
 
+	// Source address for IDDMA: the beacon-queue slot in TX packet buffer,
+	// offset past the 40-byte TX descriptor we prepended.
+	const uint32 iddmaSrc = kOcpBaseTxBuf
+		+ (uint32)kFwTxPktBufBoundary * kFwTxBufPageSize
+		+ kFwTxDescOffset;
+
 	uint32 offset = 0;
 
 	while (offset < size) {
-		// Determine chunk size — up to one page (4 KB) at a time
 		uint32 chunkSize = size - offset;
 		if (chunkSize > kFwPageSize)
 			chunkSize = kFwPageSize;
 
-		// Write this chunk to page 0 of the TX packet buffer (0x1000)
-		status_t status = _PageWriteToTxBuffer(data + offset, chunkSize);
+		// Step 1: Submit the chunk as a beacon-queue TX packet.
+		status_t status = fTxPath->SendFirmwareChunk(data + offset, chunkSize);
 		if (status != B_OK) {
-			dprintf(RTL8814AU_DRIVER_NAME ": TX buffer write failed at "
+			dprintf(RTL8814AU_DRIVER_NAME ": firmware chunk TX failed at "
+				"offset %" B_PRIu32 ": %s\n", offset, strerror(status));
+			return status;
+		}
+
+		// Step 2: Wait for the chip to acknowledge the chunk.
+		status = _WaitForRsvdPageOK();
+		if (status != B_OK) {
+			dprintf(RTL8814AU_DRIVER_NAME ": BcnValid wait failed at "
 				"offset %" B_PRIu32 "\n", offset);
 			return status;
 		}
 
-		// IDDMA from TX buffer to the MCU memory destination.
-		// Source = TX buffer base (OCP 0x18780000)
-		// Dest = target OCP address + current offset
+		// Step 3: IDDMA from the TX buffer's beacon slot to MCU memory.
 		bool isFirstChunk = (offset == 0) && resetChecksum;
-		status = _IDDMATransfer(kOcpBaseTxBuf, ocpDestAddr + offset,
+		status = _IDDMATransfer(iddmaSrc, ocpDestAddr + offset,
 			chunkSize, isFirstChunk);
 		if (status != B_OK) {
 			dprintf(RTL8814AU_DRIVER_NAME ": IDDMA transfer failed at "
@@ -454,104 +615,31 @@ RTL8814AUFirmware::_TransferSection(const uint8* data, uint32 size,
 		offset += chunkSize;
 	}
 
-	// Verify section download status via REG_CPU_DMEM_CON.
-	// After DMEM transfer, DMEM_DL_RDY (bit 5) should be set.
-	// After IRAM transfer, IMEM_DL_RDY (bit 3) should be set.
-	// These bits are set by the last IDDMA transfer's checksum validation.
-	uint32 dmemCon = fRegisterIO->Read32(kRegCpuDmemCon);
-	if (ocpDestAddr == kOcpBaseDMem) {
-		if (!(dmemCon & kDmemDlRdy)) {
-			dprintf(RTL8814AU_DRIVER_NAME ": DMEM download ready not set "
-				"(REG_CPU_DMEM_CON=0x%08" B_PRIx32 ")\n", dmemCon);
+	// After the last IDDMA transfer, the reference driver signals
+	// readiness to the MCU by writing flags to byte 0 of REG_8051FW_CTRL
+	// (0x0080).  If the checksum passed, set DL_RDY + CHKSUM_OK for the
+	// section.
+	uint32 ddmaCtrl = fRegisterIO->Read32(kRegDDMACh0Ctrl);
+	uint8 fwCtrl = fRegisterIO->Read8(kRegMcuFwDl);
+
+	if (!(ddmaCtrl & kDDMAChksumFail)) {
+		if (ocpDestAddr == kOcpBaseIMem) {
+			fwCtrl |= kImemDlRdy | kImemChksumOk;
+			fRegisterIO->Write8(kRegMcuFwDl, fwCtrl);
+			dprintf(RTL8814AU_DRIVER_NAME ": IRAM checksum OK, "
+				"IMEM_DL_RDY set (0x%02x)\n", fwCtrl);
+		} else {
+			fwCtrl |= kDmemDlRdy | kDmemChksumOk;
+			fRegisterIO->Write8(kRegMcuFwDl, fwCtrl);
+			dprintf(RTL8814AU_DRIVER_NAME ": DMEM checksum OK, "
+				"DMEM_DL_RDY set (0x%02x)\n", fwCtrl);
 		}
-	} else if (ocpDestAddr == kOcpBaseIMem) {
-		if (!(dmemCon & kImemDlRdy)) {
-			dprintf(RTL8814AU_DRIVER_NAME ": IRAM download ready not set "
-				"(REG_CPU_DMEM_CON=0x%08" B_PRIx32 ")\n", dmemCon);
-		}
-	}
-
-	return B_OK;
-}
-
-
-/*! Write firmware data to page 0 of the TX packet buffer via register
-    writes to 0x1000. The data is written in 254-byte USB control transfer
-    blocks, with 4-byte and 1-byte fallback for the remainder.
-
-    This puts the data into the TX buffer where the DDMA engine can access
-    it at OCP address kOcpBaseTxBuf (0x18780000).
-*/
-status_t
-RTL8814AUFirmware::_PageWriteToTxBuffer(const uint8* data, uint32 size)
-{
-	// Always write to page 0 of the TX buffer
-	return _WritePage(0, data, size);
-}
-
-
-/*! Write a single page of firmware data. Sets the page number in
-    REG_MCUFWDL, then writes data in 254-byte blocks to kFwStartAddress
-    (0x1000) using USB vendor control transfers.
-
-    Matches _PageWrite_8814A() + _BlockWrite_8814A() in the reference driver.
-*/
-status_t
-RTL8814AUFirmware::_WritePage(uint32 page, const uint8* data, uint32 size)
-{
-	// Select page number in bits [2:0] of byte 2 at REG_MCUFWDL (= bits
-	// [18:16] of the 32-bit register). Use 8-bit write to byte 2 only,
-	// matching the reference driver's _PageWrite_8814A() which avoids
-	// disturbing byte 0's write-1-to-clear bits.
-	uint8 byte2 = fRegisterIO->Read8(kRegMcuFwDl + 2);
-	byte2 = (byte2 & 0xF8) | (uint8)(page & 0x07);
-	status_t status = fRegisterIO->Write8(kRegMcuFwDl + 2, byte2);
-	if (status != B_OK)
-		return status;
-
-	// Phase 1: Write 254-byte blocks via WriteN (bulk USB control transfers).
-	uint32 offset = 0;
-	uint32 blockCount = size / kFwUsbBlockSize;
-
-	for (uint32 i = 0; i < blockCount; i++) {
-		status = fRegisterIO->WriteN(
-			kFwStartAddress + offset,
-			data + offset,
-			(uint16)kFwUsbBlockSize);
-		if (status != B_OK) {
-			dprintf(RTL8814AU_DRIVER_NAME ": page %" B_PRIu32 " block write "
-				"failed at offset %" B_PRIu32 "\n", page, offset);
-			return status;
-		}
-		offset += kFwUsbBlockSize;
-	}
-
-	// Phase 2: Write remaining 4-byte words
-	uint32 remainSize = size - offset;
-	uint32 wordCount = remainSize / 4;
-
-	for (uint32 i = 0; i < wordCount; i++) {
-		uint32 word;
-		memcpy(&word, data + offset, 4);
-		status = fRegisterIO->Write32(kFwStartAddress + offset, word);
-		if (status != B_OK) {
-			dprintf(RTL8814AU_DRIVER_NAME ": page %" B_PRIu32 " word write "
-				"failed at offset %" B_PRIu32 "\n", page, offset);
-			return status;
-		}
-		offset += 4;
-	}
-
-	// Phase 3: Write remaining 1-byte tail
-	remainSize = size - offset;
-	for (uint32 i = 0; i < remainSize; i++) {
-		status = fRegisterIO->Write8(kFwStartAddress + offset, data[offset]);
-		if (status != B_OK) {
-			dprintf(RTL8814AU_DRIVER_NAME ": page %" B_PRIu32 " byte write "
-				"failed at offset %" B_PRIu32 "\n", page, offset);
-			return status;
-		}
-		offset++;
+	} else {
+		dprintf(RTL8814AU_DRIVER_NAME ": section checksum FAILED "
+			"(DDMA_CH0_CTRL=0x%08" B_PRIx32 ")\n", ddmaCtrl);
+		fRegisterIO->Write32(kRegDDMACh0Ctrl,
+			ddmaCtrl | kDDMAChksumRst);
+		return B_IO_ERROR;
 	}
 
 	return B_OK;
@@ -564,10 +652,15 @@ RTL8814AUFirmware::_WritePage(uint32 page, const uint8* data, uint32 size)
     transfer length, then polls until the hardware clears the ownership bit.
     The DDMA engine also computes a running checksum over the transferred data.
 
+    The reference driver (IDDMADownLoadFW_3081) first polls for channel idle,
+    then programs SA/DA/CTRL, then polls for completion.  For the first chunk
+    of each section it omits CHKSUM_CONT; for subsequent chunks it sets
+    CHKSUM_CONT to continue the running checksum.
+
     \param srcAddr        OCP source address (typically kOcpBaseTxBuf)
     \param destAddr       OCP destination address (DMEM or IRAM base + offset)
     \param length         Number of bytes to transfer
-    \param resetChecksum  True to reset checksum accumulator (first chunk)
+    \param resetChecksum  True for the first chunk of a section (no CHKSUM_CONT)
 
     Matches IDDMADownLoadFW_3081() in the reference driver.
 */
@@ -575,27 +668,40 @@ status_t
 RTL8814AUFirmware::_IDDMATransfer(uint32 srcAddr, uint32 destAddr,
 	uint32 length, bool resetChecksum)
 {
-	// Program source and destination addresses
-	fRegisterIO->Write32(kRegDDMACh0SA, srcAddr);
-	fRegisterIO->Write32(kRegDDMACh0DA, destAddr);
-
-	// Build control word: OWN + CHKSUM_EN + length
-	// For the first chunk, reset the checksum accumulator.
-	// For subsequent chunks, set CHKSUM_CONT to continue accumulating.
-	uint32 ctrl = kDDMAChOwn | kDDMAChksumEn | (length & kDDMALenMask);
-	if (resetChecksum)
-		ctrl |= kDDMAChksumRst;
-	else
-		ctrl |= kDDMAChksumCont;
-
-	fRegisterIO->Write32(kRegDDMACh0Ctrl, ctrl);
-
-	// Poll until hardware clears the OWN bit (transfer complete)
+	// Step 1: Wait for DDMA channel 0 to be idle (OWN bit clear).
+	// The reference driver checks this before every transfer.
 	uint32 attempts = 0;
 	while (attempts < kDDMAPollAttempts) {
 		uint32 status = fRegisterIO->Read32(kRegDDMACh0Ctrl);
+		if (!(status & kDDMAChOwn))
+			break;
+		snooze(kDDMAPollDelay);
+		attempts++;
+	}
+	if (attempts >= kDDMAPollAttempts) {
+		dprintf(RTL8814AU_DRIVER_NAME ": IDDMA channel not idle "
+			"(ctrl=0x%08" B_PRIx32 ")\n",
+			fRegisterIO->Read32(kRegDDMACh0Ctrl));
+		return B_TIMED_OUT;
+	}
+
+	// Step 2: Build control word.  The reference driver uses:
+	//   DDMA_CHKSUM_EN | DDMA_CH_OWN | (length & mask)
+	//   + DDMA_CH_CHKSUM_CNT for non-first chunks (fs == FALSE).
+	uint32 ctrl = kDDMAChOwn | kDDMAChksumEn | (length & kDDMALenMask);
+	if (!resetChecksum)
+		ctrl |= kDDMAChksumCont;
+
+	// Step 3: Program source, destination, then control (last triggers DMA)
+	fRegisterIO->Write32(kRegDDMACh0SA, srcAddr);
+	fRegisterIO->Write32(kRegDDMACh0DA, destAddr);
+	fRegisterIO->Write32(kRegDDMACh0Ctrl, ctrl);
+
+	// Step 4: Poll until hardware clears the OWN bit (transfer complete)
+	attempts = 0;
+	while (attempts < kDDMAPollAttempts) {
+		uint32 status = fRegisterIO->Read32(kRegDDMACh0Ctrl);
 		if (!(status & kDDMAChOwn)) {
-			// Transfer done — check for checksum failure
 			if (status & kDDMAChksumFail) {
 				dprintf(RTL8814AU_DRIVER_NAME ": IDDMA checksum failed "
 					"(ctrl=0x%08" B_PRIx32 ")\n", status);
