@@ -471,7 +471,20 @@ display_get_encoder_mode(uint32 connectorIndex)
 				return ATOM_ENCODER_MODE_CRT;
 			break;
 		case VIDEO_CONNECTOR_HDMIA:
-			return ATOM_ENCODER_MODE_HDMI;
+			// HDMI is electrically backward-compatible with DVI. Until we
+			// program HDMI infoframes / data islands (HDMI_INFOFRAME_CONTROL0,
+			// HDMI_GENERIC_PACKET_CONTROL, HDMI_VBI_PACKET_CONTROL,
+			// AFMT_AUDIO_PACKET_CONTROL — see Linux evergreen_hdmi.c), driving
+			// AtomBIOS into ATOM_ENCODER_MODE_HDMI causes the encoder to emit
+			// data-island guard bands during HBLANK that the receiver decodes
+			// as visible pixels — observed as a magenta stripe on the left
+			// edge of the active region on Cedar/Evergreen HDMI. Linux only
+			// returns ATOM_ENCODER_MODE_HDMI when audio is enabled; mirror
+			// that conservative default until HDMI audio + infoframe support
+			// lands.
+			// TODO: switch to ATOM_ENCODER_MODE_HDMI once HDMI infoframe and
+			// audio setup are implemented for DCE4+.
+			return ATOM_ENCODER_MODE_DVI;
 		case VIDEO_CONNECTOR_DVID:
 		default:
 			return ATOM_ENCODER_MODE_DVI;
