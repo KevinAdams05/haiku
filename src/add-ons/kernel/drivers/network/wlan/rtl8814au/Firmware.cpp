@@ -343,15 +343,31 @@ RTL8814AUFirmware::_ValidateHeader()
 		return B_BAD_DATA;
 	}
 
-	// DMEM immediately follows the 64-byte header.
-	// IRAM is at the end of the file (file size - iramSize).
-	// This matches the reference driver's extraction:
-	//   dmem_ptr = pbuffer + FWHeaderSize;
-	//   iram_ptr = pbuffer + Len - iram_pkt_size;
+	// DMEM immediately follows the 64-byte header and is followed by
+	// an 8-byte XOR trailer.  IRAM is preceded by its own 8-byte XOR
+	// trailer and ends at the file boundary.  Each trailer's u16 XOR
+	// equals the section's u16 XOR, so transferring data+trailer to
+	// the MCU yields a running checksum of 0 — required for the DDMA
+	// engine to clear CHKSUM_FAIL.
+	//
+	// File layout:
+	//   [0..64)        64-byte file header
+	//   [64..h+dmem)   DMEM data
+	//   [h+dmem..+8)   DMEM 8-byte trailer
+	//   [next..+8)     IRAM 8-byte trailer
+	//   [...end)       IRAM data
+	//
+	// Transferred section sizes are dmemSize+8 and iramSize+8.  The
+	// DMEM trailer lands at DMEM[dmemSize..+8] (unused tail of MCU
+	// data memory).  The IRAM trailer lands at IRAM[0..8]; its bytes
+	// 0x00801800 0x00000000 decode as MIPS `sll $v1,$a0,0; nop`, so
+	// the MCU's PC=0 entry harmlessly falls through to real code at
+	// IRAM[8].
+	const uint32 kSectionTrailerSize = 8;
 	fDmemOffset = kFwHeaderSize;
-	fDmemSize = dmemSize;
-	fIramOffset = fDataSize - iramSize;
-	fIramSize = iramSize;
+	fDmemSize = dmemSize + kSectionTrailerSize;
+	fIramSize = iramSize + kSectionTrailerSize;
+	fIramOffset = fDataSize - fIramSize;
 
 	return B_OK;
 }
@@ -685,30 +701,45 @@ RTL8814AUFirmware::_IDDMATransfer(uint32 srcAddr, uint32 destAddr,
 		return B_TIMED_OUT;
 	}
 
-	// Step 2: Build control word.  The reference driver uses:
+	// Step 2: For the first chunk of a section, explicitly clear the
+	// DDMA running-checksum accumulator and any stale CHKSUM_FAIL
+	// flag by writing CHKSUM_RST without OWN.  Just omitting
+	// CHKSUM_CONT is NOT sufficient on this chip — the accumulator
+	// carries non-zero state from prior chip operations (EFUSE reads,
+	// MAC init, etc.) and the first chunk's checksum will fail unless
+	// we hard-reset it here.
+	if (resetChecksum) {
+		fRegisterIO->Write32(kRegDDMACh0Ctrl,
+			kDDMAChksumEn | kDDMAChksumRst);
+	}
+
+	// Step 3: Build control word.  The reference driver uses:
 	//   DDMA_CHKSUM_EN | DDMA_CH_OWN | (length & mask)
 	//   + DDMA_CH_CHKSUM_CNT for non-first chunks (fs == FALSE).
 	uint32 ctrl = kDDMAChOwn | kDDMAChksumEn | (length & kDDMALenMask);
 	if (!resetChecksum)
 		ctrl |= kDDMAChksumCont;
 
-	// Step 3: Program source, destination, then control (last triggers DMA)
+	// Step 4: Program source, destination, then control (last triggers DMA)
 	fRegisterIO->Write32(kRegDDMACh0SA, srcAddr);
 	fRegisterIO->Write32(kRegDDMACh0DA, destAddr);
 	fRegisterIO->Write32(kRegDDMACh0Ctrl, ctrl);
 
-	// Step 4: Poll until hardware clears the OWN bit (transfer complete)
+	// Step 5: Poll until hardware clears the OWN bit (transfer complete).
+	// Note: do NOT inspect kDDMAChksumFail here.  CHKSUM_FAIL reflects
+	// the running checksum the DDMA engine accumulates across all
+	// chunks of a section, and is only meaningful after the LAST chunk
+	// has been transferred.  Matches IDDMADownLoadFW_3081() in the
+	// reference driver, which only checks DDMA_CHKSUM_FAIL when
+	// ls == _TRUE.  On non-last chunks the bit may still be set from a
+	// prior incomplete section or reflect transient accumulator state.
+	// The caller validates CHKSUM_FAIL once the section is fully
+	// downloaded (see _StartFirmwareSection).
 	attempts = 0;
 	while (attempts < kDDMAPollAttempts) {
 		uint32 status = fRegisterIO->Read32(kRegDDMACh0Ctrl);
-		if (!(status & kDDMAChOwn)) {
-			if (status & kDDMAChksumFail) {
-				dprintf(RTL8814AU_DRIVER_NAME ": IDDMA checksum failed "
-					"(ctrl=0x%08" B_PRIx32 ")\n", status);
-				return B_IO_ERROR;
-			}
+		if (!(status & kDDMAChOwn))
 			return B_OK;
-		}
 		snooze(kDDMAPollDelay);
 		attempts++;
 	}

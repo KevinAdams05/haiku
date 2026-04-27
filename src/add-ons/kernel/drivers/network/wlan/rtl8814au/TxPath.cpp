@@ -250,6 +250,24 @@ RTL8814AUTxPath::SendFirmwareChunk(const uint8* data, uint32 length)
 	desc32[1] = B_HOST_TO_LENDIAN_INT32(dword1);
 	// DWORDs 2-9 remain zero — no aggregation, sequence, rate, or power
 
+	// Compute the TX descriptor checksum.  The chip silently drops every
+	// USB TX whose 16-bit descriptor checksum is wrong, and the bulk OUT
+	// endpoint then never gets drained — which manifests as the bulk URB
+	// never completing (Operation canceled on cancel_queued_transfers()).
+	// Algorithm: XOR all 16 little-endian u16 words of the first 32 bytes
+	// of the descriptor; the checksum field itself sits at byte offset 28
+	// and is left zero until the final write.  Matches
+	// rtl8814a_cal_txdesc_chksum() in the reference driver
+	// (hal/rtl8814a/rtl8814a_xmit.c).
+	uint16 checksum = 0;
+	for (uint32 i = 0; i < 16; i++) {
+		uint16 word = (uint16)desc[2 * i]
+			| ((uint16)desc[2 * i + 1] << 8);
+		checksum ^= word;
+	}
+	desc[28] = (uint8)(checksum & 0xFF);
+	desc[29] = (uint8)((checksum >> 8) & 0xFF);
+
 	memcpy(desc + kTxDescSize, data, length);
 
 	// Clear the completion semaphore of any stale signals from prior TX.
