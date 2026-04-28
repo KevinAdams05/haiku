@@ -392,6 +392,31 @@ RTL8814AUDevice::_InitHardware()
 		}
 	}
 
+	// Step 6.4: Configure USB RX aggregation so the chip will DMA
+	// received frames out over the bulk-IN endpoint.  Without this the
+	// MAC will receive but never push anything to USB.
+	status = _InitRxAggregation();
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": RX aggregation init failed: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	// Step 6.5: Enable MAC TX/RX engines.  These are deliberately left off
+	// until after firmware load, PHY init, and RF/IQ calibration complete —
+	// turning them on earlier stalls the USB TX DMA (the chip never pulls
+	// bulk-OUT frames off EP2).  Without these bits set, the chip never
+	// pumps anything onto the bulk-IN endpoint either, so the RX callback
+	// never fires.
+	{
+		uint16 crBefore = fRegisterIO->Read16(kRegCR);
+		uint16 crAfter = crBefore | kCR_MAC_TX_En | kCR_MAC_RX_En;
+		fRegisterIO->Write16(kRegCR, crAfter);
+		dprintf(RTL8814AU_DRIVER_NAME ": MAC TX/RX enabled "
+			"(REG_CR 0x%04x -> 0x%04x)\n",
+			(unsigned)crBefore, (unsigned)fRegisterIO->Read16(kRegCR));
+	}
+
 	// Step 7: Start the RX receive loop (bulk IN transfers)
 	if (fRxPath != NULL) {
 		status = fRxPath->Start();
@@ -611,6 +636,60 @@ RTL8814AUDevice::_InitMAC()
 		return status;
 
 	dprintf(RTL8814AU_DRIVER_NAME ": MAC initialization complete\n");
+	return B_OK;
+}
+
+
+/*! Configure USB RX aggregation registers so the chip pushes received
+	frames out over bulk-IN.  Without this the MAC receives into internal
+	buffers but never DMAs them to the host, so the bulk-IN URB callback
+	never fires.
+
+	We currently hardcode USB 2.0 thresholds because the ASUS USB-AC68
+	we target presents itself as USB 2.0.  The Realtek reference reads
+	REG_TYPE_ID+3 bit 0x80 to choose USB2 vs USB3 burst-size; if we ever
+	support USB 3.0 hosts properly, branch here on a runtime check.
+*/
+status_t
+RTL8814AUDevice::_InitRxAggregation()
+{
+	// Threshold: flush RX FIFO to USB when 1 page is full or 16*32us
+	// has elapsed (USB 2.0 defaults from rtwn r12au_postattach).
+	fRegisterIO->Write16(kRegRxDmaAggPgTh, kRxDmaAggUsb2Value);
+
+	// Burst length / DMA mode for USB 2.0 path.
+	uint8 dmaPro = fRegisterIO->Read8(kRegRxDmaPro);
+	uint8 newDmaPro = (dmaPro & ~kRxDmaProBurstSzMask) | kRxDmaProUsb2Value;
+	fRegisterIO->Write8(kRegRxDmaPro, newDmaPro);
+
+	// Enable RX-DMA aggregation on the TRXDMA control register.  This
+	// is the bit that actually unblocks bulk-IN delivery.
+	uint16 trxCtrl = fRegisterIO->Read16(kRegTrxDmaCfg);
+	fRegisterIO->Write16(kRegTrxDmaCfg, trxCtrl | kTrxDmaCtrlRxDmaAggEn);
+
+	// Open the per-subtype filters.  Without these the MAC silently
+	// drops all 802.11 frames regardless of RCR.AMF/ACF/ADF, so the
+	// bulk-IN endpoint stays empty.  Use 0xffff during bring-up to
+	// accept every subtype; tighten later when association works.
+	uint16 fmap0Before = fRegisterIO->Read16(kRegRxFltMap0);
+	uint16 fmap1Before = fRegisterIO->Read16(kRegRxFltMap1);
+	uint16 fmap2Before = fRegisterIO->Read16(kRegRxFltMap2);
+	fRegisterIO->Write16(kRegRxFltMap0, 0xFFFF);
+	fRegisterIO->Write16(kRegRxFltMap1, 0xFFFF);
+	fRegisterIO->Write16(kRegRxFltMap2, 0xFFFF);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": RX aggregation enabled "
+		"(RXDMA_AGG_PG_TH=0x%04x, RXDMA_PRO 0x%02x->0x%02x, "
+		"TRXDMA_CTRL 0x%04x->0x%04x)\n",
+		(unsigned)fRegisterIO->Read16(kRegRxDmaAggPgTh),
+		(unsigned)dmaPro, (unsigned)newDmaPro,
+		(unsigned)trxCtrl, (unsigned)fRegisterIO->Read16(kRegTrxDmaCfg));
+	dprintf(RTL8814AU_DRIVER_NAME ": RX subtype filters opened "
+		"(FLTMAP0 0x%04x->0x%04x, FLTMAP1 0x%04x->0x%04x, "
+		"FLTMAP2 0x%04x->0x%04x)\n",
+		(unsigned)fmap0Before, (unsigned)fRegisterIO->Read16(kRegRxFltMap0),
+		(unsigned)fmap1Before, (unsigned)fRegisterIO->Read16(kRegRxFltMap1),
+		(unsigned)fmap2Before, (unsigned)fRegisterIO->Read16(kRegRxFltMap2));
 	return B_OK;
 }
 

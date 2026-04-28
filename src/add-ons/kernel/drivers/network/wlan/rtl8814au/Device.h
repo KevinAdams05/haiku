@@ -75,6 +75,7 @@ private:
 	status_t					_InitHardware();
 	status_t					_PowerOnSequence();
 	status_t					_InitMAC();
+	status_t					_InitRxAggregation();
 	status_t					_InitPageAllocation();
 	status_t					_InitLLTTable();
 	status_t					_InitQueuePriority();

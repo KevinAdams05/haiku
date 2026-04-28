@@ -357,6 +357,36 @@ static const uint32 kTxDmaCMQShift			= 16;
 static const uint32 kTxDmaQMask				= 0x3;
 static const uint32 kTxDmaPriorityBit2		= (1 << 2);
 
+// REG_TRXDMA_CTRL bit 2 enables USB RX aggregation — without this, the
+// chip never DMAs received frames out over the bulk-IN endpoint.  See
+// freebsd_wlan rtl8812a/usb/r12au_init.c::r12au_init_rx_agg() for the
+// canonical sequence (this driver is a sibling of 8812A on the 8814A
+// silicon, so the same RX-aggregation registers apply).
+static const uint16 kTrxDmaCtrlRxDmaAggEn	= 0x0004;
+
+// USB RX DMA aggregation configuration.  Two bytes at REG_RXDMA_AGG_PG_TH:
+//   [7:0]  page count threshold (when N pages buffered, flush to USB)
+//   [15:8] timeout in ~32us units (flush after timeout regardless of
+//          page count, so latency stays bounded for low-rate traffic)
+// USB 2.0 defaults from r12au_postattach: dma_size=0x01, dma_time=0x10
+// USB 3.0 defaults: dma_size=0x07, dma_time=0x1a
+static const uint16 kRxDmaAggUsb2Value		= 0x1001;	// time<<8 | size
+static const uint16 kRxDmaAggUsb3Value		= 0x1a07;
+
+// REG_RXDMA_PRO controls RX-DMA burst behavior to USB.  Layout:
+//   bit 0       (reserved)
+//   bit 1       DMA mode
+//   bits 2-3    burst count (set to 3)
+//   bits 4-5    burst size: 0=USB3, 1=USB2, 2=USB1
+//   bits 6-7    (reserved)
+// USB 2.0 -> 0x1e (DMA_MODE | (3<<2) | (1<<4))
+// USB 3.0 -> 0x0e (DMA_MODE | (3<<2) | (0<<4))
+static const uint16 kRegRxDmaPro			= 0x0290;
+static const uint8 kRxDmaProBurstSzMask	= 0x30;
+static const uint8 kRxDmaProUsb2Value		= 0x1e;
+static const uint8 kRxDmaProUsb3Value		= 0x0e;
+
+
 // CR (command register) bit definitions
 static const uint32 kCR_HCI_TxDMA_En		= (1 << 0);
 static const uint32 kCR_HCI_RxDMA_En		= (1 << 1);
@@ -452,6 +482,18 @@ static const uint16 kRegRxDmaAggPgTh		= 0x0280;
 static const uint16 kRegRxPktNum			= 0x0284;
 static const uint16 kRegRxDmaCtrl			= 0x0286;
 static const uint16 kRegRxDmaStatus			= 0x0288;
+
+// REG_RXFLTMAP0/1/2 (0x06A0/0x06A2/0x06A4) — per-subtype receive filter.
+// Each bit gates one of 16 IEEE-802.11 subtypes; if a register is zero,
+// the chip drops EVERY frame of that type even when RCR.AMF/ACF/ADF is
+// set.  Power-on default is unknown but appears to be zero on this chip
+// (no callbacks fire on bulk-IN until these are populated).  See
+// freebsd_wlan if_rtwn_rx.c::rtwn_rxfilter_update_mgt() for the canonical
+// STA-mode mask.  We use 0xffff (accept everything) during bring-up
+// because we want maximum visibility while diagnosing scan results.
+static const uint16 kRegRxFltMap0			= 0x06A0;	// management subtypes
+static const uint16 kRegRxFltMap1			= 0x06A2;	// control subtypes
+static const uint16 kRegRxFltMap2			= 0x06A4;	// data subtypes
 
 
 // ---------------------------------------------------------------------------

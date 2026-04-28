@@ -143,6 +143,8 @@ private:
 	mutex						fLock;
 
 	// Statistics
+	uint32						fSubmitsLogged;
+	uint32						fTransfersCompleted;
 	uint32						fFramesReceived;
 	uint32						fFramesDropped;
 	uint32						fCrcErrors;

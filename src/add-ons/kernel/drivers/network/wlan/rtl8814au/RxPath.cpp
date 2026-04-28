@@ -53,6 +53,8 @@ RTL8814AURxPath::RTL8814AURxPath(RTL8814AURegisterIO* registerIO,
 	fFrameCallback(NULL),
 	fFrameCallbackCookie(NULL),
 	fRunning(false),
+	fSubmitsLogged(0),
+	fTransfersCompleted(0),
 	fFramesReceived(0),
 	fFramesDropped(0),
 	fCrcErrors(0),
@@ -348,8 +350,14 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 status_t
 RTL8814AURxPath::_SubmitTransfer(uint32 index)
 {
-	return fUSBModule->queue_bulk(fBulkIn, fBuffers[index],
+	status_t st = fUSBModule->queue_bulk(fBulkIn, fBuffers[index],
 		kUsbRxBufferSize, _RxCallback, this);
+	if (fSubmitsLogged < 8) {
+		dprintf(RTL8814AU_DRIVER_NAME ": _SubmitTransfer(%" B_PRIu32 ") -> %s\n",
+			index, strerror(st));
+		fSubmitsLogged++;
+	}
+	return st;
 }
 
 
@@ -369,6 +377,14 @@ RTL8814AURxPath::_RxCallback(void* cookie, status_t status, void* data,
 	RTL8814AURxPath* rxPath = static_cast<RTL8814AURxPath*>(cookie);
 	if (rxPath == NULL)
 		return;
+
+	rxPath->fTransfersCompleted++;
+	// Log first 8 transfers, then every 64th, to detect RX activity without flooding
+	if (rxPath->fTransfersCompleted <= 8 || (rxPath->fTransfersCompleted & 63) == 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": RX cb #%" B_PRIu32 " status=%s len=%" B_PRIuSIZE " frames=%" B_PRIu32 " crc=%" B_PRIu32 " drop=%" B_PRIu32 "\n",
+			rxPath->fTransfersCompleted, strerror(status), actualLength,
+			rxPath->fFramesReceived, rxPath->fCrcErrors, rxPath->fFramesDropped);
+	}
 
 	// If the transfer was canceled or the device removed, don't re-submit
 	if (status == B_CANCELED || status == B_DEV_NOT_READY) {
