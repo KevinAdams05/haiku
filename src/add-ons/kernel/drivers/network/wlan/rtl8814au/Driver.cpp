@@ -15,6 +15,7 @@
  */
 
 #include "Driver.h"
+#include "WiFiIoctl.h"
 
 #include <new>
 #include <stdio.h>
@@ -201,7 +202,7 @@ init_hardware()
 status_t
 init_driver()
 {
-	dprintf(RTL8814AU_DRIVER_NAME ": init_driver()\n");
+	dprintf(RTL8814AU_DRIVER_NAME ": init_driver() SIOCS80211=0x%08x SIOCG80211=0x%08x ireqsize=%lu\n", (unsigned)SIOCS80211, (unsigned)SIOCG80211, (unsigned long)sizeof(struct ieee80211req));
 
 	// Initialize the device list
 	memset(gDeviceList, 0, sizeof(gDeviceList));

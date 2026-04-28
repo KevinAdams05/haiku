@@ -22,23 +22,15 @@
 
 #include <SupportDefs.h>
 
-// The userland-visible ioctl() encoding macros live in
-// headers/compatibility/bsd/sys/ioccom.h, which the kernel-driver
-// build does not pick up.  Re-define just the bits we need so the
-// _IOW / _IOWR computations below match what userland sees.
-#ifndef _SYS_IOCCOM_H
-#	define IOCPARM_MASK	0x1fff
-#	define IOC_VOID		(unsigned long)0x20000000
-#	define IOC_OUT		(unsigned long)0x40000000
-#	define IOC_IN		(unsigned long)0x80000000
-#	define IOC_INOUT	(IOC_IN | IOC_OUT)
-#	define _IOC(inout, group, num, len) \
-		(inout | ((len & IOCPARM_MASK) << 16) | ((group) << 8) | (num))
-#	define _IO(g,n)		_IOC(IOC_VOID, (g), (n), 0)
-#	define _IOR(g,n,t)	_IOC(IOC_OUT,  (g), (n), sizeof(t))
-#	define _IOW(g,n,t)	_IOC(IOC_IN,   (g), (n), sizeof(t))
-#	define _IOWR(g,n,t)	_IOC(IOC_INOUT, (g), (n), sizeof(t))
-#endif
+// libnetapi (BNetworkDevice / NetworkDevice.cpp) is built with
+// src/libs/compat/freebsd_network/ on its include path, so its
+// <compat/sys/ioccom.h> resolves to the FreeBSD compat shim where
+//   _IOW(g,n,t)  := SIOCEND + n
+//   _IOWR(g,n,t) := SIOCEND + n
+// not the BSD-style bit-encoded form (IOC_IN | len<<16 | group<<8 | n).
+// We must use the same convention here so SIOCS80211/SIOCG80211 match
+// the values userland actually puts on the wire.
+#include <sys/sockio.h>
 
 
 // Sizes that match the canonical ABI exactly.
@@ -52,7 +44,7 @@
 #	define IEEE80211_RATE_MAXSIZE	15
 #endif
 #ifndef IFNAMSIZ
-#	define IFNAMSIZ	16
+#	define IFNAMSIZ	32
 #endif
 
 
@@ -65,8 +57,8 @@ struct ieee80211req {
 	void*		i_data;				// command-specific extra data
 };
 
-#define SIOCS80211	_IOW('i', 234, struct ieee80211req)
-#define SIOCG80211	_IOWR('i', 235, struct ieee80211req)
+#define SIOCS80211	(SIOCEND + 234)
+#define SIOCG80211	(SIOCEND + 235)
 
 
 // Command codes (subset — what we actually handle).

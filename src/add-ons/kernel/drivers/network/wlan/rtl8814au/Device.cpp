@@ -1292,6 +1292,8 @@ RTL8814AUDevice::Control(void* cookie, uint32 op, void* args, size_t length)
 	if (device == NULL || device->fRemoved)
 		return B_DEV_NOT_READY;
 
+	dprintf(RTL8814AU_DRIVER_NAME ": Control op=0x%" B_PRIx32 " op_dec=%" B_PRIu32 " len=%" B_PRIuSIZE " hi=0x%08x lo=0x%08x\n", (uint32)op, (uint32)op, length, (unsigned)((uint64)op >> 32), (unsigned)(uint64)op);
+
 	switch (op) {
 		case ETHER_INIT:
 			// ethernet_up() calls this before ETHER_GETADDR.  Treated
