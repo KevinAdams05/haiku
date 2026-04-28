@@ -38,6 +38,11 @@ int32 api_version = B_CUR_DRIVER_API_VERSION;
 // USB bus manager module pointer — acquired during init_driver()
 usb_module_info* gUSBModule = NULL;
 
+// Net-notification module — best-effort load in init_driver().  When
+// non-NULL we publish B_NETWORK_WLAN_SCANNED / _JOINED / _LEFT events
+// through it; when NULL the events are simply dropped.
+net_notifications_module_info* gNotificationModule = NULL;
+
 // Device list: up to kMaxDeviceCount simultaneously attached adapters.
 // Protected by gDeviceListLock.
 mutex gDeviceListLock;
@@ -238,6 +243,17 @@ init_driver()
 	};
 	gUSBModule->install_notify(RTL8814AU_DRIVER_NAME, &notifyHooks);
 
+	// Best-effort: load the net-notification module so scan-done /
+	// connect / disconnect events reach userland.  Failure isn't fatal;
+	// the device still works without notifications, callers just have
+	// to poll for state changes.
+	if (get_module(NET_NOTIFICATIONS_MODULE_NAME,
+			(module_info**)&gNotificationModule) != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": net_notifications module not "
+			"available, scan/connect events won't be delivered\n");
+		gNotificationModule = NULL;
+	}
+
 	dprintf(RTL8814AU_DRIVER_NAME ": driver initialized, "
 		"%" B_PRIu32 " supported devices registered\n",
 		kSupportedDeviceCount);
@@ -267,6 +283,12 @@ uninit_driver()
 	locker.Unlock();
 
 	mutex_destroy(&gDeviceListLock);
+
+	if (gNotificationModule != NULL) {
+		put_module(NET_NOTIFICATIONS_MODULE_NAME);
+		gNotificationModule = NULL;
+	}
+
 	put_module(B_USB_MODULE_NAME);
 
 	// Free the cached device name strings

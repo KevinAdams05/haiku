@@ -17,6 +17,8 @@
 #include <USB3.h>
 #include <lock.h>
 
+#include <net_notifications.h>
+
 #include "RTL8814AU.h"
 
 
@@ -26,6 +28,11 @@ class RTL8814AUDevice;
 // The USB bus manager module — acquired in init_driver(), released in
 // uninit_driver(). All USB operations go through this pointer.
 extern usb_module_info* gUSBModule;
+
+// Net-notification module — used to publish 802.11 events (scan-done,
+// joined, left) to the userland network kit.  Best-effort: NULL if the
+// notification module isn't loaded.
+extern net_notifications_module_info* gNotificationModule;
 
 // Mutex protecting the device list. Held when adding/removing devices
 // and when iterating publish_devices().

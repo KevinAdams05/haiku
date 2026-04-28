@@ -615,8 +615,25 @@ RTL8814AUWiFiManager::_HandleScanComplete(const uint8* payload,
 		fState = kWiFiStateDisconnected;
 	locker.Unlock();
 
-	// Signal any thread waiting for scan completion
-	release_sem_etc(fScanCompleteSem, 1, B_DO_NOT_RESCHEDULE);
+	// Signal any thread waiting for scan completion.  Use B_RELEASE_ALL
+	// so every blocked waiter wakes — there can be more than one when
+	// the SIOCS80211 ioctl path spawns a notifier thread alongside an
+	// in-driver caller.
+	release_sem_etc(fScanCompleteSem, 1,
+		B_DO_NOT_RESCHEDULE | B_RELEASE_ALL);
+}
+
+
+/*! Block until the current scan completes (or timeout elapses).
+    \param timeout  Relative timeout in microseconds, or B_INFINITE_TIMEOUT.
+    eturn  B_OK if the scan completed before the timeout, B_TIMED_OUT
+             if not, or another error.
+*/
+status_t
+RTL8814AUWiFiManager::WaitForScanComplete(bigtime_t timeout)
+{
+	return acquire_sem_etc(fScanCompleteSem, 1,
+		B_RELATIVE_TIMEOUT | B_CAN_INTERRUPT, timeout);
 }
 
 

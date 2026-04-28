@@ -135,6 +135,11 @@ public:
 	status_t					StartScan(const uint8* channelList = NULL,
 									uint32 channelCount = 0);
 
+	// Block until the current scan completes (or timeout fires).
+	// Multiple threads may wait simultaneously; all are woken when
+	// the scan-done C2H event arrives.
+	status_t					WaitForScanComplete(bigtime_t timeout);
+
 	// Check if a scan is currently in progress.
 	bool						IsScanning() const
 									{ return fState == kWiFiStateScanning; }

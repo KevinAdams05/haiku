@@ -27,10 +27,13 @@
 #include <OS.h>
 #include <net/if_media.h>
 #include <util/AutoLock.h>
+#include <util/KMessage.h>
 
 #include <ether_driver.h>
+#include <NetworkNotifications.h>
 
 #include "Driver.h"
+#include "WiFiIoctl.h"
 
 
 // ---------------------------------------------------------------------------
@@ -71,6 +74,7 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fRxRingHead = 0;
 	fRxRingTail = 0;
 	fLinkStateSem = -1;
+	fScanNotifierThread = -1;
 	strlcpy(fDeviceName, deviceName, sizeof(fDeviceName));
 	mutex_init(&fLock, "rtl8814au:device");
 
@@ -840,6 +844,19 @@ RTL8814AUDevice::_Shutdown()
 {
 	dprintf(RTL8814AU_DRIVER_NAME ": shutting down hardware\n");
 
+	// Reap the scan-notifier thread before tearing down WiFiManager —
+	// otherwise it could dereference fWiFiManager after delete.
+	thread_id notifier;
+	{
+		MutexLocker locker(fLock);
+		notifier = fScanNotifierThread;
+		fScanNotifierThread = -1;
+	}
+	if (notifier >= 0) {
+		status_t threadResult;
+		wait_for_thread(notifier, &threadResult);
+	}
+
 	// Stop the WiFi management module (interrupt IN)
 	if (fWiFiManager != NULL)
 		fWiFiManager->Stop();
@@ -863,6 +880,294 @@ RTL8814AUDevice::_Shutdown()
 	}
 
 	fHardwareInitialized = false;
+}
+
+
+/*! 802.11 set-parameter ioctl handler.  Dispatched from Control() for
+    SIOCS80211.  args is a USER-space pointer to a struct ieee80211req;
+    we copy it in, switch on i_type, and dispatch to a per-command helper.
+*/
+status_t
+RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
+{
+	if (length < sizeof(struct ieee80211req))
+		return B_BAD_VALUE;
+
+	struct ieee80211req request;
+	if (user_memcpy(&request, userArgs, sizeof(request)) != B_OK)
+		return B_BAD_ADDRESS;
+
+	switch (request.i_type) {
+		case IEEE80211_IOC_HAIKU_COMPAT_WLAN_UP:
+		case IEEE80211_IOC_HAIKU_COMPAT_WLAN_DOWN:
+			// Haiku-compat marker that the network stack uses to flip
+			// IFF_UP without re-opening the device.  Driver open/close
+			// already manages hardware state — just acknowledge.
+			return B_OK;
+
+		case IEEE80211_IOC_SCAN_REQ:
+			// We currently ignore the user-supplied scan_req parameters
+			// (active vs passive, ssid filters, dwell times) and just
+			// kick a full-channel scan via the firmware.  Refining this
+			// is straightforward once the basic flow is verified.
+			return _DoScanRequest();
+
+		case IEEE80211_IOC_SCAN_CANCEL:
+			// Best-effort: not yet implemented in WiFiManager, treat as
+			// a no-op.  ifconfig only issues this on user interrupt.
+			return B_OK;
+
+		default:
+			dprintf(RTL8814AU_DRIVER_NAME
+				": SIOCS80211 unsupported i_type=%u\n",
+				(unsigned)request.i_type);
+			return B_DEV_INVALID_IOCTL;
+	}
+}
+
+
+/*! 802.11 get-parameter ioctl handler.  Dispatched from Control() for
+    SIOCG80211.  Reads the request header, dispatches on i_type, and
+    writes back any updated request fields (i_len, i_val) to user space.
+*/
+status_t
+RTL8814AUDevice::_Get80211(void* userArgs, size_t length)
+{
+	if (length < sizeof(struct ieee80211req))
+		return B_BAD_VALUE;
+
+	struct ieee80211req request;
+	if (user_memcpy(&request, userArgs, sizeof(request)) != B_OK)
+		return B_BAD_ADDRESS;
+
+	switch (request.i_type) {
+		case IEEE80211_IOC_SCAN_RESULTS:
+		{
+			status_t status = _GetScanResults(request.i_data, request.i_len);
+			if (status != B_OK)
+				return status;
+
+			// Write the (possibly-shrunk) length back to user space.
+			return user_memcpy(userArgs, &request, sizeof(request));
+		}
+
+		case IEEE80211_IOC_BSSID:
+		{
+			if (fWiFiManager == NULL
+				|| fWiFiManager->State() != kWiFiStateConnected) {
+				return B_ERROR;
+			}
+			WiFiLinkState linkState;
+			fWiFiManager->GetLinkState(&linkState);
+
+			if (request.i_len < 6 || request.i_data == NULL)
+				return B_BAD_VALUE;
+			return user_memcpy(request.i_data, linkState.bssid, 6);
+		}
+
+		default:
+			dprintf(RTL8814AU_DRIVER_NAME
+				": SIOCG80211 unsupported i_type=%u\n",
+				(unsigned)request.i_type);
+			return B_DEV_INVALID_IOCTL;
+	}
+}
+
+
+/*! Kick off a WiFi scan and arrange for B_NETWORK_WLAN_SCANNED to fire
+    when the firmware reports completion.
+
+    The scan itself is driven by RTL8814AUWiFiManager::StartScan(); we
+    spawn a one-shot kernel thread that blocks on the manager's scan-done
+    sem, fires the notification, then exits.  Userland's BNetworkDevice
+    ::Scan() implementation creates a ScanListener that watches for
+    exactly this notification.
+*/
+status_t
+RTL8814AUDevice::_DoScanRequest()
+{
+	if (fWiFiManager == NULL)
+		return B_ERROR;
+
+	// Reject overlapping scan requests — let the previous one finish.
+	{
+		MutexLocker locker(fLock);
+		if (fScanNotifierThread >= 0)
+			return EINPROGRESS;
+	}
+
+	status_t status = fWiFiManager->StartScan();
+	if (status == B_BUSY)
+		return EINPROGRESS;
+	if (status != B_OK)
+		return status;
+
+	// Spawn the notifier — it owns the work of publishing the scan-done
+	// event after the firmware C2H event arrives.  Best-effort: if the
+	// thread can't be created we still return B_OK so the scan isn't
+	// wasted; the caller just won't get woken via notification (it can
+	// still poll IsScanning() / fetch results).
+	thread_id thread = spawn_kernel_thread(_ScanNotifierThreadEntry,
+		"rtl8814au:scan_notifier", B_NORMAL_PRIORITY, this);
+	if (thread >= 0) {
+		{
+			MutexLocker locker(fLock);
+			fScanNotifierThread = thread;
+		}
+		resume_thread(thread);
+	} else {
+		dprintf(RTL8814AU_DRIVER_NAME
+			": failed to spawn scan notifier: %s\n", strerror(thread));
+	}
+
+	return B_OK;
+}
+
+
+/*! Static thread entry — forwards to the instance loop. */
+int32
+RTL8814AUDevice::_ScanNotifierThreadEntry(void* arg)
+{
+	RTL8814AUDevice* device = static_cast<RTL8814AUDevice*>(arg);
+	device->_ScanNotifierLoop();
+	return 0;
+}
+
+
+/*! Wait for the firmware's scan-done event then publish a
+    B_NETWORK_WLAN_SCANNED notification on the userland-visible
+    network monitor port.
+
+    A 30-second cap protects against a wedged firmware never sending
+    the C2H event — we still clear fScanNotifierThread so a future
+    scan request can spawn a new notifier.
+*/
+void
+RTL8814AUDevice::_ScanNotifierLoop()
+{
+	status_t status = B_TIMED_OUT;
+	if (fWiFiManager != NULL && !fRemoved)
+		status = fWiFiManager->WaitForScanComplete(30LL * 1000 * 1000);
+
+	if (status == B_OK && gNotificationModule != NULL && !fRemoved) {
+		char messageBuffer[512];
+		KMessage message;
+		message.SetTo(messageBuffer, sizeof(messageBuffer),
+			B_NETWORK_MONITOR);
+		message.AddInt32("opcode", B_NETWORK_WLAN_SCANNED);
+		message.AddString("interface", fDeviceName);
+
+		gNotificationModule->send_notification(&message);
+	}
+
+	MutexLocker locker(fLock);
+	fScanNotifierThread = -1;
+}
+
+
+/*! Format the current BSS list as a series of ieee80211req_scan_result
+    records and write them into the user-supplied buffer.
+
+    Each record is:
+       [fixed ieee80211req_scan_result header]
+       [SSID bytes]
+       [meshid bytes — always zero-length here]
+       [IE bytes — full beacon IE block from BssEntry]
+       [optional pad to multiple of 4]
+*/
+status_t
+RTL8814AUDevice::_GetScanResults(void* userBuffer, uint16& userLength)
+{
+	if (fWiFiManager == NULL)
+		return B_ERROR;
+	if (userBuffer == NULL)
+		return B_BAD_VALUE;
+
+	const uint32 kMaxResults = 64;
+	BssEntry* entries = new(std::nothrow) BssEntry[kMaxResults];
+	if (entries == NULL)
+		return B_NO_MEMORY;
+
+	uint32 count = fWiFiManager->GetScanResults(entries, kMaxResults);
+
+	uint8* scratch = new(std::nothrow) uint8[userLength];
+	if (scratch == NULL) {
+		delete[] entries;
+		return B_NO_MEMORY;
+	}
+	memset(scratch, 0, userLength);
+
+	uint32 written = 0;
+	for (uint32 i = 0; i < count; i++) {
+		const BssEntry& bss = entries[i];
+		if (!bss.valid)
+			continue;
+
+		uint32 ssidLen = bss.ssidLength;
+		if (ssidLen > 32)
+			ssidLen = 32;
+		uint32 ieLen = bss.ieLength;
+		if (ieLen > kMaxIELength)
+			ieLen = kMaxIELength;
+
+		uint32 recordLen = sizeof(struct ieee80211req_scan_result)
+			+ ssidLen + ieLen;
+		recordLen = (recordLen + 3) & ~3;
+
+		if (written + recordLen > userLength)
+			break;
+
+		struct ieee80211req_scan_result* result
+			= (struct ieee80211req_scan_result*)(scratch + written);
+		result->isr_len = (uint16)recordLen;
+		result->isr_ie_off = (uint16)sizeof(*result);
+		result->isr_ie_len = (uint16)ieLen;
+
+		// 2.4 GHz: 1..13 follow the 2407 + 5*ch formula; channel 14 is
+		// JP-only (2484 MHz).  5 GHz uses 5000 + 5*ch.  The chip is 2.4
+		// GHz only today, but the math is here for forward compat.
+		uint16 freq = 0;
+		if (bss.channel >= 1 && bss.channel <= 13)
+			freq = 2407 + bss.channel * 5;
+		else if (bss.channel == 14)
+			freq = 2484;
+		else if (bss.channel >= 36)
+			freq = 5000 + bss.channel * 5;
+		result->isr_freq = freq;
+
+		result->isr_flags = (bss.channel <= 14)
+			? (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_DYN)
+			: (IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_OFDM);
+		result->isr_noise = -95;
+		result->isr_rssi = bss.rssi;
+		result->isr_intval = bss.beaconInterval;
+		result->isr_capinfo = (uint8)(bss.capability & 0xff);
+		result->isr_erp = 0;
+		memcpy(result->isr_bssid, bss.bssid, 6);
+		result->isr_nrates = 0;
+		result->isr_ssid_len = (uint8)ssidLen;
+		result->isr_meshid_len = 0;
+
+		uint8* tail = (uint8*)(result + 1);
+		memcpy(tail, bss.ssid, ssidLen);
+		tail += ssidLen;
+		memcpy(tail, bss.ieData, ieLen);
+
+		written += recordLen;
+	}
+
+	status_t status = B_OK;
+	if (written > 0)
+		status = user_memcpy(userBuffer, scratch, written);
+
+	delete[] entries;
+	delete[] scratch;
+
+	if (status != B_OK)
+		return status;
+
+	userLength = (uint16)written;
+	return B_OK;
 }
 
 
@@ -1089,6 +1394,18 @@ RTL8814AUDevice::Control(void* cookie, uint32 op, void* args, size_t length)
 			// (Read() always blocks on the RX semaphore)
 			return B_OK;
 		}
+
+		case SIOCS80211:
+			// 802.11 set-parameter ioctl from userland.  args is a USER
+			// pointer to a struct ieee80211req — the per-i_type handler
+			// is responsible for any further user_memcpy()s.
+			return device->_Set80211(args, length);
+
+		case SIOCG80211:
+			// 802.11 get-parameter ioctl from userland.  Same USER-pointer
+			// rules as SIOCS80211; handler may also write back into the
+			// caller-supplied i_data buffer.
+			return device->_Get80211(args, length);
 
 		default:
 			return B_DEV_INVALID_IOCTL;

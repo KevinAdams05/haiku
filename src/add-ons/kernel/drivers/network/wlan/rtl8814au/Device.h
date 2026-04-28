@@ -107,6 +107,21 @@ private:
 									SecurityType security, int8 rssi,
 									const uint8* ieData, uint32 ieLength);
 
+	// 802.11 ioctl handlers — dispatched from Control() for
+	// SIOCS80211 / SIOCG80211.  args is a USER pointer to a
+	// struct ieee80211req; the helpers do their own user_memcpy().
+	status_t					_Set80211(void* userArgs, size_t length);
+	status_t					_Get80211(void* userArgs, size_t length);
+	status_t					_DoScanRequest();
+	status_t					_GetScanResults(void* userBuffer,
+									uint16& userLength);
+
+	// Background thread that waits for the C2H scan-done event and
+	// publishes B_NETWORK_WLAN_SCANNED via the net-notifications
+	// module so userland scan listeners wake up.
+	static int32				_ScanNotifierThreadEntry(void* arg);
+	void						_ScanNotifierLoop();
+
 	// Cleanup
 	void						_Shutdown();
 
@@ -144,6 +159,11 @@ private:
 
 	// Link state change notification
 	sem_id						fLinkStateSem;	// Provided by network stack
+
+	// Scan-complete notifier thread.  Spawned by _DoScanRequest(),
+	// joins on the WiFiManager's scan-done sem then publishes a
+	// B_NETWORK_WLAN_SCANNED event.  -1 when no notifier is in flight.
+	thread_id					fScanNotifierThread;
 
 	// MAC address (read from EFUSE during init)
 	uint8						fMacAddress[6];
