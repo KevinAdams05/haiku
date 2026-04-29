@@ -140,6 +140,12 @@ private:
 	status_t					fInitStatus;
 	bool						fRemoved;
 	bool						fHardwareInitialized;
+
+	// Pending-join state populated by IEEE80211_IOC_SSID / _BSSID, used by
+	// _MLME when wpa_supplicant orchestrates the actual auth/assoc.
+	char						fJoinSsid[33];
+	uint32						fJoinSsidLength;
+	uint8						fJoinBssid[6];
 	int32						fOpenCount;
 
 	// Synchronization

@@ -69,6 +69,9 @@ struct ieee80211req {
 #define IEEE80211_IOC_SCAN_REQ			103
 #define IEEE80211_IOC_SCAN_CANCEL		104
 
+#define IEEE80211_IOC_WPAKEY			19
+#define IEEE80211_IOC_MLME				21
+
 // Haiku-specific extensions (see freebsd_wlan/net80211/ieee80211_ioctl.h).
 #define IEEE80211_IOC_HAIKU_COMPAT_WLAN_UP		0x6000
 #define IEEE80211_IOC_HAIKU_COMPAT_WLAN_DOWN	0x6001
@@ -131,5 +134,11 @@ struct ieee80211req_scan_result {
 #define IEEE80211_CHAN_OFDM		0x00040
 #define IEEE80211_CHAN_DYN		0x00400
 
+
+// Stub for STA_INFO get — only used to return 'no stations' currently.
+struct ieee80211req_sta_info {
+	uint16 isi_len;
+	uint8 isi_pad[126];
+};
 
 #endif	// RTL8814AU_WIFI_IOCTL_H

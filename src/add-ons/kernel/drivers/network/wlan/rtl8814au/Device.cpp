@@ -509,6 +509,30 @@ RTL8814AUDevice::_InitHardware()
 	}
 
 	fHardwareInitialized = true;
+
+	// TX path verification: send a single broadcast probe-request frame.
+	// If TX works, we should see APs responding with unicast probe-responses
+	// (frame subtype 5) addressed to our MAC over the next second or two.
+	// This is a one-shot diagnostic — keep until JOIN is wired up.
+	{
+		uint8 probe[28];
+		probe[0] = 0x40;	// Frame Control byte 0: type=mgmt(0), subtype=ProbeReq(4)
+		probe[1] = 0x00;	// Frame Control byte 1: no flags
+		probe[2] = 0x00; probe[3] = 0x00;	// Duration
+		probe[4] = 0xFF; probe[5] = 0xFF; probe[6] = 0xFF;	// DA (broadcast)
+		probe[7] = 0xFF; probe[8] = 0xFF; probe[9] = 0xFF;
+		memcpy(probe + 10, fMacAddress, 6);					// SA (our MAC)
+		probe[16] = 0xFF; probe[17] = 0xFF; probe[18] = 0xFF;	// BSSID (broadcast)
+		probe[19] = 0xFF; probe[20] = 0xFF; probe[21] = 0xFF;
+		probe[22] = 0x00; probe[23] = 0x00;	// Sequence
+		probe[24] = 0x00; probe[25] = 0x00;	// SSID IE (id=0, len=0 = wildcard)
+		probe[26] = 0x01; probe[27] = 0x00;	// Supported Rates IE (id=1, len=0)
+
+		status_t txStatus = fTxPath->Transmit(probe, sizeof(probe),
+			kTxQueueMGT, 0, 0, kSecurityNone, true);
+		dprintf(RTL8814AU_DRIVER_NAME ": TX probe-req test: %s\n",
+			strerror(txStatus));
+	}
 	dprintf(RTL8814AU_DRIVER_NAME ": hardware initialization complete\n");
 	return B_OK;
 }
@@ -1149,6 +1173,73 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 			// a no-op.  ifconfig only issues this on user interrupt.
 			return B_OK;
 
+		case IEEE80211_IOC_SSID:
+		{
+			// net_server / wpa_supplicant sets the SSID we want to join.
+			// The data buffer is at request.i_data (USER pointer) and
+			// length is request.i_len.  Store it for use during MLME ops.
+			uint32 ssidLen = request.i_len > sizeof(fJoinSsid) - 1
+				? sizeof(fJoinSsid) - 1 : request.i_len;
+			if (ssidLen > 0) {
+				if (user_memcpy(fJoinSsid, request.i_data, ssidLen) != B_OK)
+					return B_BAD_ADDRESS;
+			}
+			fJoinSsid[ssidLen] = 0;
+			fJoinSsidLength = ssidLen;
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_SSID set: '%s' (%u bytes)\n",
+				fJoinSsid, (unsigned)ssidLen);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_BSSID:
+		{
+			// Set the target BSSID we want to associate with.  Program it
+			// into the chip's BSSID register so the MAC starts accepting
+			// frames from this AP.
+			if (request.i_len < 6)
+				return B_BAD_VALUE;
+			uint8 bssid[6];
+			if (user_memcpy(bssid, request.i_data, 6) != B_OK)
+				return B_BAD_ADDRESS;
+			for (uint32 i = 0; i < 6; i++)
+				fRegisterIO->Write8(kRegBSSID + i, bssid[i]);
+			memcpy(fJoinBssid, bssid, 6);
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_BSSID set: "
+				"%02x:%02x:%02x:%02x:%02x:%02x\n",
+				bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_MLME:
+		{
+			// Auth/Assoc/Deauth/Disassoc command from wpa_supplicant.
+			// Stub for now — log the request and return B_OK so the upper
+			// layers don't error out.  Actual frame TX will be wired up
+			// once we verify wpa_supplicant launches and reaches this point.
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_MLME stub: i_val=%d i_len=%u\n",
+				(int)request.i_val, (unsigned)request.i_len);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_WPAKEY:
+		{
+			// Encryption key install — also from wpa_supplicant.  Stubbed.
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY stub: len=%u\n",
+				(unsigned)request.i_len);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_HAIKU_JOIN:
+		{
+			// Haiku-specific join request from net_server / NetworkSetup.
+			// Acknowledge the request — actual auth+assoc state machine is
+			// stubbed for now.  This gets ifconfig past the join call so we
+			// can iterate on the rest of the chain.
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN: len=%u, "
+				"target_ssid='%s'\n", (unsigned)request.i_len, fJoinSsid);
+			return B_OK;
+		}
+
 		default:
 			dprintf(RTL8814AU_DRIVER_NAME
 				": SIOCS80211 unsupported i_type=%u\n",
@@ -1196,6 +1287,18 @@ RTL8814AUDevice::_Get80211(void* userArgs, size_t length)
 				return B_BAD_VALUE;
 			return user_memcpy(request.i_data, linkState.bssid, 6);
 		}
+
+		case IEEE80211_IOC_STA_INFO:
+		{
+			// Return basic station-status info.  We're not yet associated
+			// to anything, so report zero stations.
+			request.i_len = 0;
+			return user_memcpy(userArgs, &request, sizeof(request));
+		}
+
+		case 16:	// IEEE80211_IOC_DRIVER_CAPS — userland sniffs driver caps
+			request.i_val = 0;
+			return user_memcpy(userArgs, &request, sizeof(request));
 
 		default:
 			dprintf(RTL8814AU_DRIVER_NAME
