@@ -370,7 +370,7 @@ static const uint16 kTrxDmaCtrlRxDmaAggEn	= 0x0004;
 //          page count, so latency stays bounded for low-rate traffic)
 // USB 2.0 defaults from r12au_postattach: dma_size=0x01, dma_time=0x10
 // USB 3.0 defaults: dma_size=0x07, dma_time=0x1a
-static const uint16 kRxDmaAggUsb2Value		= 0x1001;	// time<<8 | size
+static const uint16 kRxDmaAggUsb2Value = 0x0520;	// time<<8 | size
 static const uint16 kRxDmaAggUsb3Value		= 0x1a07;
 
 // REG_RXDMA_PRO controls RX-DMA burst behavior to USB.  Layout:

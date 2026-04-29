@@ -820,18 +820,27 @@ RTL8814AUDevice::_DumpRxState(const char* tag)
 status_t
 RTL8814AUDevice::_ConfigTrxPath()
 {
-	// Minimal: enable the OFDM+CCK demodulator at 0x0808 bits 28-29.
-	// Now that we deassert FEN_BB_GLB_RSTn at Step 5.4, BB writes
-	// actually land.  Other 8814AU-specific TRX-path tweaks (RFE PINMUX
-	// per rfe_type, CCK path mask per number-of-streams, etc.) are
-	// deferred — first prove RX works with just demod enabled.
+	// 1) CCK TX/RX path mask: write the exact value morrownr/8814au
+	//    writes during cold-start (frame 11100 of the cold-start
+	//    trace) for this hardware variant — 0x46ff800c.
+	//    bits 31:28 = 0x4  (CCK TX path B)
+	//    bits 27:24 = 0x6  (CCK RX paths B+C)
+	//    Our BB init table leaves bits 24-27 = 0x1 (only path A),
+	//    which doesn't match the physical antennas on this 4-stream
+	//    hardware (EFUSE antenna=12 → paths C+D, rfe_type=20).
+	uint32 cckBefore = fRegisterIO->Read32(kRegBBCckRxPath);
+	fRegisterIO->Write32(kRegBBCckRxPath, 0x46ff800cu);
+	uint32 cckAfter = fRegisterIO->Read32(kRegBBCckRxPath);
+
+	// 2) OFDM+CCK demodulator enable: 0x0808 bits 28-29 = 11.
 	uint32 ofdmBefore = fRegisterIO->Read32(kRegBBOfdmCckEn);
 	fRegisterIO->Write32(kRegBBOfdmCckEn, ofdmBefore | 0x30000000u);
 	uint32 ofdmAfter = fRegisterIO->Read32(kRegBBOfdmCckEn);
-	dprintf(RTL8814AU_DRIVER_NAME ": OFDMCCK demod enabled "
-		"(0x808 0x%08x->0x%08x stuck=%s)\n",
-		(unsigned)ofdmBefore, (unsigned)ofdmAfter,
-		((ofdmAfter & 0x30000000u) == 0x30000000u) ? "yes" : "NO");
+
+	dprintf(RTL8814AU_DRIVER_NAME ": TRX path configured "
+		"(CCK_RX_PATH 0x%08x->0x%08x, OFDMCCK_EN 0x%08x->0x%08x)\n",
+		(unsigned)cckBefore, (unsigned)cckAfter,
+		(unsigned)ofdmBefore, (unsigned)ofdmAfter);
 	return B_OK;
 }
 
