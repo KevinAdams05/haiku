@@ -145,44 +145,13 @@ RTL8814AUPhyConfig::~RTL8814AUPhyConfig()
 status_t
 RTL8814AUPhyConfig::Initialize()
 {
-	dprintf(RTL8814AU_DRIVER_NAME ": initializing PHY (4-path RF)\n");
+	dprintf(RTL8814AU_DRIVER_NAME ": replaying morrownr cold-start init "
+		"sequence (%" B_PRIu32 " writes)\n", kFullInitSequenceCount);
 
-	// Step 1: Load baseband register initialization table
-	status_t status = _InitBBRegisters();
+	status_t status = _ApplyBBTable(kFullInitSequence,
+		kFullInitSequenceCount);
 	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": BB init failed: %s\n",
-			strerror(status));
-		return status;
-	}
-
-	// Step 2: Configure each RF path's transceiver
-	status = _InitRFRegisters();
-	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": RF init failed: %s\n",
-			strerror(status));
-		return status;
-	}
-
-	// Step 3: IQ calibration — compensate TX/RX IQ imbalance on all paths
-	status = _RunIQCalibration();
-	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": IQ calibration failed: %s\n",
-			strerror(status));
-		// Non-fatal — the radio will work but signal quality may be degraded
-	}
-
-	// Step 4: Set initial TX power from EFUSE tables
-	status = _SetTxPower();
-	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": TX power config failed: %s\n",
-			strerror(status));
-		return status;
-	}
-
-	// Step 5: Set initial channel (channel 1, 20 MHz, 2.4 GHz)
-	status = SetChannel(1, kBandwidth20MHz);
-	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": initial channel set failed: %s\n",
+		dprintf(RTL8814AU_DRIVER_NAME ": full init replay failed: %s\n",
 			strerror(status));
 		return status;
 	}
@@ -190,6 +159,7 @@ RTL8814AUPhyConfig::Initialize()
 	fInitialized = true;
 	dprintf(RTL8814AU_DRIVER_NAME ": PHY initialization complete\n");
 	return B_OK;
+
 }
 
 
@@ -315,29 +285,10 @@ RTL8814AUPhyConfig::_InitBBRegisters()
 status_t
 RTL8814AUPhyConfig::_InitRFRegisters()
 {
-	dprintf(RTL8814AU_DRIVER_NAME ": configuring RF transceivers "
-		"(4 paths, %" B_PRIu32 " common entries each)\n",
-		kRFInitCommonCount);
-
-	for (uint32 path = 0; path < kRfPathCount; path++) {
-		dprintf(RTL8814AU_DRIVER_NAME ": initializing RF path %c\n",
-			'A' + path);
-
-		// Apply the common RF configuration (shared across all paths)
-		status_t status = _ApplyRFTable(path, kRFInitCommon,
-			kRFInitCommonCount);
-		if (status != B_OK)
-			return status;
-
-		// Apply path-specific trim values
-		status = _ApplyRFTable(path, kRFInitPerPath[path],
-			kRFInitPerPathCount[path]);
-		if (status != B_OK)
-			return status;
-	}
-
-	dprintf(RTL8814AU_DRIVER_NAME ": RF init complete\n");
+	// No-op — RF programming is now part of kFullInitSequence
+	// (replayed by Initialize()).
 	return B_OK;
+
 }
 
 
