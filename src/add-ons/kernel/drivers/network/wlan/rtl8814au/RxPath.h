@@ -89,6 +89,7 @@ public:
 	// Start the receive loop — submits all RX transfer buffers to the
 	// USB bulk IN endpoint. Frames are delivered via the callback.
 	status_t					Start();
+	status_t					ClearHalt();
 
 	// Stop the receive loop — cancels all pending bulk IN transfers.
 	void						Stop();

@@ -76,6 +76,8 @@ private:
 	status_t					_PowerOnSequence();
 	status_t					_InitMAC();
 	status_t					_InitRxAggregation();
+	void						_DumpRxState(const char* tag);
+	status_t					_ConfigTrxPath();
 	status_t					_InitPageAllocation();
 	status_t					_InitLLTTable();
 	status_t					_InitQueuePriority();

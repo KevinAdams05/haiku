@@ -342,6 +342,22 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 }
 
 
+/*! Clear any ENDPOINT_HALT condition on the bulk-IN endpoint.  If the
+    pipe is stalled at start of day, the chip will accept submitted URBs
+    but never deliver data on them, exactly mirroring the bulk-OUT halt
+    we already clear during firmware load.
+*/
+status_t
+RTL8814AURxPath::ClearHalt()
+{
+	status_t st = fUSBModule->clear_feature(fBulkIn,
+		USB_FEATURE_ENDPOINT_HALT);
+	dprintf(RTL8814AU_DRIVER_NAME ": clear_feature(ENDPOINT_HALT) on "
+		"bulk IN returned %s\n", strerror(st));
+	return st;
+}
+
+
 /*! Submit (or re-submit) a receive buffer to the USB bulk IN endpoint.
 
     \param index  Buffer index (0..kRxTransferCount-1)

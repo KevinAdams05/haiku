@@ -495,6 +495,22 @@ static const uint16 kRegRxFltMap0			= 0x06A0;	// management subtypes
 static const uint16 kRegRxFltMap1			= 0x06A2;	// control subtypes
 static const uint16 kRegRxFltMap2			= 0x06A4;	// data subtypes
 
+// Baseband demodulator enable + TX/RX path masks.  Sibling 8812A driver
+// (freebsd_wlan rtl8812a) writes these in r12a_set_band_2ghz to actually
+// turn on CCK and OFDM demodulation in the BB.  Without bits 28-29 set
+// in OFDMCCK_EN the BB drops every received frame and the MAC RX FIFO
+// stays empty (REG_RXPKT_NUM = 0).  See r12a_chan.c for the canonical
+// per-band programming.
+static const uint16 kRegBBOfdmCckEn			= 0x0808;	// also serves as RX_PATH
+static const uint32 kBBOfdmCckEnCck			= 0x10000000;	// CCK demod enable
+static const uint32 kBBOfdmCckEnOfdm			= 0x20000000;	// OFDM demod enable
+static const uint32 kBBRxPathMaskShift		= 8;		// 4-bit path mask in bits 8-11
+static const uint16 kRegBBTxPath			= 0x080C;
+static const uint16 kRegBBCckRxPath			= 0x0A04;
+static const uint16 kRegBBCckCheck			= 0x0454;
+static const uint16 kRegBBRfePinmux0		= 0x0CB0;
+
+
 
 // ---------------------------------------------------------------------------
 // Register addresses — Protocol Engine (0x0400 – 0x047F)
