@@ -382,6 +382,27 @@ RTL8814AUDevice::_InitHardware()
 		return status;
 	}
 
+	// Step 5.4: Take the BB out of GLOBAL reset so subsequent BB writes
+	// (init table, AGC, RFE pinmux, OFDMCCK_EN, etc.) actually land.
+	// REG 0x1002 BIT0 (FEN_BBRSTB) and BIT1 (FEN_BB_GLB_RSTn) must BOTH
+	// be set; the chip starts with these clear, so writes to 0x800-0x1FFF
+	// are silently dropped until we set them.
+	//
+	// Discovered via usbmon capture from morrownr/8814au's cold-start
+	// init: frame 9642 writes 0x03 to 0x1002, frame 9650 onward writes
+	// to BB regs (0x800, 0x804, 0x808, ...) succeed.  Our previous
+	// attempt set only BIT0 (assuming it was a clock gate); turns out
+	// BIT1 is the actual BB-global-reset deassert and is what unblocks
+	// register writes.
+	{
+		uint8 before = fRegisterIO->Read8(0x1002);
+		fRegisterIO->Write8(0x1002, before | 0x03u);
+		uint8 after = fRegisterIO->Read8(0x1002);
+		dprintf(RTL8814AU_DRIVER_NAME ": BB out of global reset "
+			"(0x1002 0x%02x->0x%02x)\n",
+			(unsigned)before, (unsigned)after);
+	}
+
 	// Step 5.5: Power on all 4 RF analog paths BEFORE the BB init table
 	// is applied.  The RTL8814AU has Path A/B/C/D RF blocks at addresses
 	// 0x01F/0x020/0x021/0x076 respectively (different layout from the
@@ -400,6 +421,22 @@ RTL8814AUDevice::_InitHardware()
 		dprintf(RTL8814AU_DRIVER_NAME ": RF analog powered on "
 			"(A=0x%02x B=0x%02x C=0x%02x D=0x%02x)\n",
 			(unsigned)rfA, (unsigned)rfB, (unsigned)rfC, (unsigned)rfD);
+	}
+
+	// Step 5.6: GPIO_IO_SEL prerequisite for the RFE.  Mirrors the
+	// bInit==TRUE / rfe_type=0 branch of morrownr/8814au
+	// PHY_SetRFEReg8814A.  Sets bits 22-23 of REG 0x40 (= bits 6-7 of
+	// byte 0x42) so the GPIO mux routes the RFE pins correctly.
+	//
+	// The companion BB-side write (0x1994[3:0] = 0xF) is deferred to
+	// _ConfigTrxPath because BB writes only stick when the BB clock
+	// is gated (0x1002 BIT0 = 0).
+	{
+		uint8 gpioSel = fRegisterIO->Read8(0x0042);
+		fRegisterIO->Write8(0x0042, gpioSel | 0xC0);
+		dprintf(RTL8814AU_DRIVER_NAME ": GPIO_IO_SEL set "
+			"(0x42: 0x%02x->0x%02x)\n",
+			(unsigned)gpioSel, (unsigned)fRegisterIO->Read8(0x0042));
 	}
 
 	// Step 6: PHY/RF initialization — configure all 4 RF paths
@@ -783,50 +820,18 @@ RTL8814AUDevice::_DumpRxState(const char* tag)
 status_t
 RTL8814AUDevice::_ConfigTrxPath()
 {
-	// 1) RF front-end PINMUX for 2.4 GHz, rfe_type=0/default.  Without
-	//    these the front-end routes signal energy to the wrong place
-	//    and the BB never sees a valid analog input.  Addresses match
-	//    morrownr/8814au PHY_SetRFEReg8814A's default fall-through.
-	fRegisterIO->Write32(0x0CB0, 0x77777777);	// rA_RFE_Pinmux_Jaguar
-	fRegisterIO->Write32(0x0EB0, 0x77777777);	// rB_RFE_Pinmux_Jaguar
-	fRegisterIO->Write32(0x18B4, 0x77777777);	// rC_RFE_Pinmux_Jaguar
-	// 0x1ABC[27:20] = 0x77 (BT-coexist disabled).
-	uint32 v1abc = fRegisterIO->Read32(0x1ABC);
-	fRegisterIO->Write32(0x1ABC, (v1abc & ~0x0FF00000u) | 0x07700000u);
-
-	// 2) OFDM TX path (rTxPath_Jaguar at 0x080C bits 7:4) = 0x2 (Path B).
-	uint32 txPath = fRegisterIO->Read32(kRegBBTxPath);
-	txPath = (txPath & ~0xF0u) | 0x20u;
-	fRegisterIO->Write32(kRegBBTxPath, txPath);
-
-	// 3) CCK 2R CCA disable: clear bits 18 and 22 of 0x0A2C.
-	uint8 falseAlarm2 = fRegisterIO->Read8(0x0A2E);
-	fRegisterIO->Write8(0x0A2E, falseAlarm2 & ~0x44);
-
-	// 4) CCK TX/RX path mask (rCCK_RX_Jaguar at 0x0A04).
-	//    bits 31:28 = 0x4 (TX Path B), bits 27:24 = 0x5 (RX A+C).
-	uint32 cckPath = fRegisterIO->Read32(kRegBBCckRxPath);
-	cckPath = (cckPath & ~0xF0000000u) | 0x40000000u;
-	cckPath = (cckPath & ~0x0F000000u) | 0x05000000u;
-	fRegisterIO->Write32(kRegBBCckRxPath, cckPath);
-
-	// 5) Re-attempt OFDM/CCK demod enable (rOFDMCCKEN_Jaguar at 0x0808
-	//    bits 28-29).  morrownr/8814au writes bOFDMEN|bCCKEN here AFTER
-	//    the RFE pinmux is set; our earlier attempt may have failed
-	//    because the RFE wasn't yet routing energy.
-	uint32 ofdm = fRegisterIO->Read32(kRegBBOfdmCckEn);
-	ofdm = (ofdm & ~0x30000000u) | 0x30000000u;
-	fRegisterIO->Write32(kRegBBOfdmCckEn, ofdm);
-
-	// 6) CCK_CHECK = 0 for 2.4 GHz (clear 5 GHz bit).
-	fRegisterIO->Write8(kRegBBCckCheck, 0);
-
-	uint32 rfeBack = fRegisterIO->Read32(0x0CB0);
-	uint32 ofdmBack = fRegisterIO->Read32(kRegBBOfdmCckEn);
-	uint32 cckBack = fRegisterIO->Read32(kRegBBCckRxPath);
-	dprintf(RTL8814AU_DRIVER_NAME ": TRX path configured "
-		"(RFE_PINMUX0=0x%08x, OFDMCCK_EN=0x%08x, CCK_RX_PATH=0x%08x)\n",
-		(unsigned)rfeBack, (unsigned)ofdmBack, (unsigned)cckBack);
+	// Minimal: enable the OFDM+CCK demodulator at 0x0808 bits 28-29.
+	// Now that we deassert FEN_BB_GLB_RSTn at Step 5.4, BB writes
+	// actually land.  Other 8814AU-specific TRX-path tweaks (RFE PINMUX
+	// per rfe_type, CCK path mask per number-of-streams, etc.) are
+	// deferred — first prove RX works with just demod enabled.
+	uint32 ofdmBefore = fRegisterIO->Read32(kRegBBOfdmCckEn);
+	fRegisterIO->Write32(kRegBBOfdmCckEn, ofdmBefore | 0x30000000u);
+	uint32 ofdmAfter = fRegisterIO->Read32(kRegBBOfdmCckEn);
+	dprintf(RTL8814AU_DRIVER_NAME ": OFDMCCK demod enabled "
+		"(0x808 0x%08x->0x%08x stuck=%s)\n",
+		(unsigned)ofdmBefore, (unsigned)ofdmAfter,
+		((ofdmAfter & 0x30000000u) == 0x30000000u) ? "yes" : "NO");
 	return B_OK;
 }
 
