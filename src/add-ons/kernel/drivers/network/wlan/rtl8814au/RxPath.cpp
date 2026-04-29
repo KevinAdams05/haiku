@@ -294,7 +294,12 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 
 		// Calculate where the payload starts and its total frame size
 		// with alignment padding
-		uint32 headerSize = kRxDescSize + drvInfoSize;
+		// On the 8814AU, when descriptor's physt bit is set, the chip
+		// prepends a fixed 32-byte PHY status block before the 802.11
+		// frame, regardless of what the descriptor's drvinfo_sz field
+		// reports (which may be 0 even with PHY status present).
+		uint32 phyStatusBytes = info.hasPhyStatus ? 32 : drvInfoSize;
+		uint32 headerSize = kRxDescSize + phyStatusBytes;
 		uint32 payloadOffset = offset + headerSize;
 		uint32 payloadLength = info.packetLength;
 
@@ -315,7 +320,7 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 		// Parse PHY status if present
 		if (info.hasPhyStatus && drvInfoSize > 0) {
 			_ParsePhyStatus(data + offset + kRxDescSize,
-				drvInfoSize, &info);
+				phyStatusBytes, &info);
 		}
 
 		// Check for errors
@@ -327,6 +332,15 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 			// ICV error = decryption failure — drop
 		} else if (payloadLength > 0 && fFrameCallback != NULL) {
 			// Deliver the valid frame to the registered callback
+			static uint32 sDescDumps = 0;
+			if (sDescDumps < 4) {
+				dprintf(RTL8814AU_DRIVER_NAME ": rxdesc[%u] dword0=0x%08x phyStatus=%u drvInfo=%u shift=%u pktLen=%u payOff=%u\n",
+					(unsigned)sDescDumps, (unsigned)dword0,
+					(unsigned)info.hasPhyStatus, (unsigned)drvInfoSize,
+					(unsigned)shift, (unsigned)payloadLength,
+					(unsigned)(payloadOffset - offset));
+				sDescDumps++;
+			}
 			fFrameCallback(fFrameCallbackCookie,
 				data + payloadOffset, payloadLength, &info);
 			fFramesReceived++;

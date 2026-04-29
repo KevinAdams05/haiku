@@ -745,6 +745,8 @@ RTL8814AUDevice::_InitRxAggregation()
 	uint16 fmap0Before = fRegisterIO->Read16(kRegRxFltMap0);
 	uint16 fmap1Before = fRegisterIO->Read16(kRegRxFltMap1);
 	uint16 fmap2Before = fRegisterIO->Read16(kRegRxFltMap2);
+	// Tell the chip to prepend a 32-byte PHY status block to every RX
+	fRegisterIO->Write8(0x060F, 0x04);
 	fRegisterIO->Write16(kRegRxFltMap0, 0xFFFF);
 	fRegisterIO->Write16(kRegRxFltMap1, 0xFFFF);
 	fRegisterIO->Write16(kRegRxFltMap2, 0xFFFF);
@@ -1769,8 +1771,10 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	// The first two bytes of the 802.11 frame contain the frame control.
 	// Bits [3:2] of the first byte indicate the frame type:
 	//   0 = management, 1 = control, 2 = data
+
 	uint8 frameType = (frameData[0] >> 2) & 0x03;
 	uint8 frameSubtype = (frameData[0] >> 4) & 0x0F;
+
 
 	if (frameType == 0 && device->fWiFiManager != NULL) {
 		// Management frame — parse beacons (subtype 8) and probe
