@@ -151,6 +151,8 @@ public:
 
 	// Copy scan results into a caller-provided buffer. Thread-safe.
 	// Returns the number of entries copied.
+	const BssEntry*				FindBssBySsid(const char* ssid,
+									uint32 ssidLen) const;
 	uint32						GetScanResults(BssEntry* results,
 									uint32 maxEntries);
 

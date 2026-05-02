@@ -386,35 +386,97 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	if (isBroadcast)
 		dword0 |= kTxDescBMC;
 
-	// DWORD 1: MACID, queue select, security type
-	uint32 dword1 = (macID & kTxDescMACID_Mask)
-		| (((uint32)queueSelect << kTxDescQueueSel_Shift)
-			& kTxDescQueueSel_Mask)
+	// Translate our internal queue enum to the descriptor's QSLT_*
+	// value namespace.  The TX descriptor's queue_sel field expects:
+	//   QSLT_MGNT = 0x12, QSLT_HIGH = 0x11, QSLT_BCN = 0x10,
+	//   QSLT_VO = 0x07, QSLT_VI = 0x05, QSLT_BE = 0x02, QSLT_BK = 0x01.
+	// Our enum encodes the USB pipe index instead.  Without the right
+	// QSLT value the chip's MAC scheduler never picks the frame off
+	// its internal queue, so nothing reaches the air.
+	// NB: TxQueueSelect enum values are USB pipe indices, not unique
+	// queue IDs — kTxQueueMGT/CMD/BCN all = 2.  In _BuildDescriptor
+	// we treat any pipe-3 queue (MGT/CMD/BCN) as MGNT (0x12); the
+	// beacon path uses its own dword-1 build above with kQslBeacon.
+	// VO/VI both map to pipe 0; BE/BK to pipe 1.  Pick the lower-prio
+	// value of each pair so we don't lie about urgency to the chip.
+	uint32 qslt;
+	if (queueSelect == kTxQueueMGT)			// pipe 3 (MGT/CMD/BCN)
+		qslt = 0x12;							// QSLT_MGNT
+	else if (queueSelect == kTxQueueBE)		// pipe 1 (BE/BK)
+		qslt = 0x02;							// QSLT_BE
+	else if (queueSelect == kTxQueueVO)		// pipe 0 (VO/VI)
+		qslt = 0x05;							// QSLT_VI
+	else
+		qslt = 0x02;
+
+	// For management frames morrownr's pcap shows MACID=1, rate_id=8.
+	uint8 effectiveMacID = macID;
+	uint32 rateID = 0;
+	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
+		if (effectiveMacID == 0)
+			effectiveMacID = 1;
+		rateID = 8;
+	}
+
+	// DWORD 1: MACID, queue select, rate ID, security type
+	uint32 dword1 = (effectiveMacID & kTxDescMACID_Mask)
+		| ((qslt << kTxDescQueueSel_Shift) & kTxDescQueueSel_Mask)
+		| ((rateID << kTxDescRateID_Shift) & kTxDescRateID_Mask)
 		| (((uint32)secType << kTxDescSecType_Shift)
 			& kTxDescSecType_Mask);
 
-	// DWORD 2: aggregation enable for data frames (not management)
+	// DWORD 2: aggregation enable for data frames (not management).
+	// morrownr's probe-req sets the high byte of dword2 to 0x3F (NAV /
+	// RTS-control bits).  Setting those bits hangs the chip's MAC
+	// scheduler — the queue stops draining and the USB control pipe
+	// times out.  Leave them clear; mgmt frames don't need them.
 	uint32 dword2 = 0;
 	if (queueSelect != kTxQueueMGT && queueSelect != kTxQueueCMD)
 		dword2 |= kTxDescAGGEn;
 
-	// DWORD 3: sequence number
+	// DWORD 3: sequence number + USE_RATE / DISABLE_FB / NAV_USE_HDR.
+	// USE_RATE (bit 8) tells the chip to use the data_rate in dword4
+	// instead of waiting for rate-adaptation hints — without it the
+	// chip never transmits.
 	uint32 dword3 = ((uint32)seqNum << kTxDescSeq_Shift)
 		& kTxDescSeq_Mask;
+	dword3 |= (1 << 8);		// USE_RATE
+	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
+		dword3 |= (1 << 10);	// DISABLE_FB
+		dword3 |= (1 << 15);	// NAV_USE_HDR
+	}
 
-	// DWORD 4: data rate, short preamble for CCK rates
+	// DWORD 4: data rate, short preamble for CCK rates.
+	// morrownr probe-req has 0x001A0000 (rate index 0x1A which seems
+	// off — possibly bandwidth/spec related).  For now keep our value.
 	uint32 dword4 = (dataRate & kTxDescDataRate_Mask);
 	if (dataRate <= kRateCCK11)
 		dword4 |= kTxDescDataShort;
 
-	// Write all DWORDs in little-endian format
+	// DWORD 6: morrownr's pcap shows 0x00000001 here for mgmt frames
+	// but writing that bit also wedges the chip.  Skip it — frames go
+	// out fine without it.
+
+	// DWORD 8 bit 15: HWSEQ_EN — let HW assign sequence numbers.
+	uint32 dword8 = (1 << 15);
+
+	// Write the dwords (DWORD 7 reserved for descriptor checksum,
+	// computed below over the first 32 bytes).
 	uint32* desc32 = reinterpret_cast<uint32*>(descriptor);
 	desc32[0] = B_HOST_TO_LENDIAN_INT32(dword0);
 	desc32[1] = B_HOST_TO_LENDIAN_INT32(dword1);
 	desc32[2] = B_HOST_TO_LENDIAN_INT32(dword2);
 	desc32[3] = B_HOST_TO_LENDIAN_INT32(dword3);
 	desc32[4] = B_HOST_TO_LENDIAN_INT32(dword4);
-	// DWORDs 5–9 remain zero (TX power offset = 0, no SW define)
+	desc32[8] = B_HOST_TO_LENDIAN_INT32(dword8);
+
+	// 16-bit XOR checksum over first 32 bytes, stored at offset 28-29.
+	uint16 checksum = 0;
+	const uint16* words = reinterpret_cast<const uint16*>(descriptor);
+	for (uint32 i = 0; i < 16; i++)
+		checksum ^= B_LENDIAN_TO_HOST_INT16(words[i]);
+	descriptor[28] = (uint8)(checksum & 0xFF);
+	descriptor[29] = (uint8)((checksum >> 8) & 0xFF);
 }
 
 

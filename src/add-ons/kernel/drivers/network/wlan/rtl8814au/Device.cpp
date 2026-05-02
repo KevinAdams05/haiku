@@ -508,6 +508,8 @@ RTL8814AUDevice::_InitHardware()
 		}
 	}
 
+	fJoinState = kJoinIdle;
+	fJoinSeqCounter = 0;
 	fHardwareInitialized = true;
 
 	// TX path verification: send a single broadcast probe-request frame.
@@ -1232,12 +1234,13 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 		case IEEE80211_IOC_HAIKU_JOIN:
 		{
 			// Haiku-specific join request from net_server / NetworkSetup.
-			// Acknowledge the request — actual auth+assoc state machine is
-			// stubbed for now.  This gets ifconfig past the join call so we
-			// can iterate on the rest of the chain.
-			dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN: len=%u, "
-				"target_ssid='%s'\n", (unsigned)request.i_len, fJoinSsid);
-			return B_OK;
+			// Drive the full auth+assoc state machine for OPEN networks;
+			// WPA-secured networks need wpa_supplicant + IOC_WPAKEY.
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN: target_ssid='%s', "
+				"bssid=%02x:%02x:%02x:%02x:%02x:%02x\n", fJoinSsid,
+				fJoinBssid[0], fJoinBssid[1], fJoinBssid[2],
+				fJoinBssid[3], fJoinBssid[4], fJoinBssid[5]);
+			return _DoJoin(fJoinBssid, fJoinSsid, fJoinSsidLength);
 		}
 
 		default:
@@ -1880,11 +1883,27 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 
 
 	if (frameType == 0 && device->fWiFiManager != NULL) {
-		// Management frame — parse beacons (subtype 8) and probe
-		// responses (subtype 5) to update the BSS list.
-		if (frameSubtype == 8 || frameSubtype == 5) {
-			device->_ParseBeaconOrProbe(frameData, frameLength, info);
+		// Diag: count mgmt subtypes
+		static uint32 sMgmtStats[16] = {0};
+		sMgmtStats[frameSubtype]++;
+		static uint32 sMgmtTick = 0;
+		if (++sMgmtTick >= 200) {
+			sMgmtTick = 0;
+			dprintf(RTL8814AU_DRIVER_NAME ": mgmt subtypes: beacon(8)=%u probe(5)=%u auth(11)=%u assoc(1)=%u disasoc(10)=%u\n",
+				(unsigned)sMgmtStats[8], (unsigned)sMgmtStats[5],
+				(unsigned)sMgmtStats[11], (unsigned)sMgmtStats[1],
+				(unsigned)sMgmtStats[10]);
 		}
+		// Management frames:
+		//   8 = beacon, 5 = probe-resp -> BSS list
+		//   11 = authentication -> auth state machine
+		//   1 = associate-resp -> assoc state machine
+		if (frameSubtype == 8 || frameSubtype == 5)
+			device->_ParseBeaconOrProbe(frameData, frameLength, info);
+		else if (frameSubtype == 11)
+			device->_HandleAuthResponse(frameData, frameLength);
+		else if (frameSubtype == 1)
+			device->_HandleAssocResponse(frameData, frameLength);
 		// Don't queue management frames into the data ring buffer
 		return;
 	}
@@ -2061,3 +2080,239 @@ RTL8814AUDevice::_UpdateBssEntry(const uint8* bssid, const char* ssid,
 			beaconInterval, capability, security, rssi, ieData, ieLength);
 	}
 }
+
+
+// ---------------------------------------------------------------------------
+// Open-network join state machine (auth + assoc)
+// ---------------------------------------------------------------------------
+
+/*! Entry point for IOC_HAIKU_JOIN — drives an open-network auth+assoc
+    handshake to the supplied BSSID.  Returns immediately after
+    submitting the auth request; completion is signaled asynchronously
+    when _HandleAuthResponse / _HandleAssocResponse run from the RX
+    path (which run on the USB callback thread).
+*/
+status_t
+RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
+	uint32 ssidLen)
+{
+	// If we got stuck mid-handshake from a prior attempt that the AP
+	// ignored, allow a fresh start — we have no auth-timeout timer yet.
+	if (fJoinState == kJoinAuthenticating
+		|| fJoinState == kJoinAssociating) {
+		dprintf(RTL8814AU_DRIVER_NAME ": _DoJoin: clearing stuck state %d\n",
+			(int)fJoinState);
+		fJoinState = kJoinIdle;
+	}
+
+	// If caller didn't supply a real BSSID (zeros, broadcast, or never
+	// set), look it up by SSID from the recent scan results.
+	uint8 zeros[6] = { 0, 0, 0, 0, 0, 0 };
+	uint8 broadcast[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	uint8 resolved[6];
+	uint8 apChannel = 0;
+	// Always look up the matching BSS so we can park on its channel.
+	// After a scan the chip is on whatever channel the scan ended on,
+	// which is rarely the AP's — so without this auth-req goes out on
+	// the wrong channel and the AP never hears us.
+	if (fWiFiManager != NULL) {
+		const BssEntry* match = fWiFiManager->FindBssBySsid(ssid, ssidLen);
+		if (match != NULL)
+			apChannel = match->channel;
+	}
+	if (memcmp(bssid, zeros, 6) == 0 || memcmp(bssid, broadcast, 6) == 0
+		|| (bssid[0] == 0xCC && bssid[1] == 0xCC)) {
+		if (fWiFiManager == NULL) {
+			dprintf(RTL8814AU_DRIVER_NAME ": _DoJoin: no BSSID, no manager\n");
+			return B_BAD_VALUE;
+		}
+		const BssEntry* match = fWiFiManager->FindBssBySsid(ssid, ssidLen);
+		if (match == NULL) {
+			dprintf(RTL8814AU_DRIVER_NAME ": _DoJoin: no BSS matching "
+				"'%s' in scan list — run a scan first\n", ssid);
+			return B_NAME_NOT_FOUND;
+		}
+		memcpy(resolved, match->bssid, 6);
+		apChannel = match->channel;
+		bssid = resolved;
+	}
+
+	dprintf(RTL8814AU_DRIVER_NAME ": _DoJoin '%s' -> "
+		"%02x:%02x:%02x:%02x:%02x:%02x ch=%u\n", ssid,
+		bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+		(unsigned)apChannel);
+
+	// Park the chip on the AP's channel before any TX.  Bandwidth left
+	// at 20 MHz — narrowest, always supported, and sufficient for mgmt.
+	if (apChannel != 0 && fPhyConfig != NULL) {
+		status_t chStatus = fPhyConfig->SetChannel(apChannel,
+			kBandwidth20MHz);
+		if (chStatus != B_OK) {
+			dprintf(RTL8814AU_DRIVER_NAME ": _DoJoin: SetChannel(%u) "
+				"failed: %s\n", (unsigned)apChannel, strerror(chStatus));
+		}
+	}
+
+	// Set chip BSSID register so MAC frame filter accepts AP traffic
+	for (uint32 i = 0; i < 6; i++)
+		fRegisterIO->Write8(kRegBSSID + i, bssid[i]);
+	memcpy(fJoinBssid, bssid, 6);
+	strlcpy(fJoinSsid, ssid, sizeof(fJoinSsid));
+	fJoinSsidLength = ssidLen;
+	fJoinSeqCounter = 0;
+	fJoinState = kJoinAuthenticating;
+
+	return _SendAuthRequest();
+}
+
+
+/*! Build and transmit an open-system authentication request frame
+    (subtype 11, auth_alg=0, auth_seq=1, status=0).
+*/
+status_t
+RTL8814AUDevice::_SendAuthRequest()
+{
+	uint8 frame[30];
+	frame[0] = 0xB0;	// FC byte 0: type=mgmt(0), subtype=Auth(11)
+	frame[1] = 0x00;	// FC byte 1: no flags
+	frame[2] = 0x00; frame[3] = 0x3A;	// duration 314us
+	memcpy(frame + 4, fJoinBssid, 6);	// addr1 = DA = BSSID
+	memcpy(frame + 10, fMacAddress, 6);	// addr2 = SA = us
+	memcpy(frame + 16, fJoinBssid, 6);	// addr3 = BSSID
+	uint16 seq = (++fJoinSeqCounter) << 4;
+	frame[22] = seq & 0xFF;
+	frame[23] = (seq >> 8) & 0xFF;
+	frame[24] = 0x00; frame[25] = 0x00;	// auth alg = 0 (open)
+	frame[26] = 0x01; frame[27] = 0x00;	// auth seq = 1
+	frame[28] = 0x00; frame[29] = 0x00;	// status = 0 (reserved in req)
+
+	dprintf(RTL8814AU_DRIVER_NAME ": TX auth request seq=1\n");
+	return fTxPath->Transmit(frame, sizeof(frame), kTxQueueMGT,
+		0, 0, kSecurityNone, false);
+}
+
+
+/*! Build and transmit an association request frame (subtype 0).
+    Body: capability info, listen interval, SSID IE, supported rates IE.
+*/
+status_t
+RTL8814AUDevice::_SendAssocRequest()
+{
+	uint8 frame[256];
+	uint32 i = 0;
+
+	frame[i++] = 0x00;	// FC byte 0: type=mgmt(0), subtype=AssocReq(0)
+	frame[i++] = 0x00;
+	frame[i++] = 0x00; frame[i++] = 0x3A;	// duration
+	memcpy(frame + i, fJoinBssid, 6); i += 6;	// DA = BSSID
+	memcpy(frame + i, fMacAddress, 6); i += 6;	// SA = us
+	memcpy(frame + i, fJoinBssid, 6); i += 6;	// BSSID
+	uint16 seq = (++fJoinSeqCounter) << 4;
+	frame[i++] = seq & 0xFF;
+	frame[i++] = (seq >> 8) & 0xFF;
+
+	// Body
+	frame[i++] = 0x01; frame[i++] = 0x00;	// capability info: ESS only
+	frame[i++] = 0x14; frame[i++] = 0x00;	// listen interval = 20
+
+	// SSID IE
+	frame[i++] = 0;	// IE id
+	frame[i++] = (uint8)fJoinSsidLength;
+	memcpy(frame + i, fJoinSsid, fJoinSsidLength);
+	i += fJoinSsidLength;
+
+	// Supported Rates IE — 1, 2, 5.5, 11, 6, 9, 12, 18 Mbps
+	frame[i++] = 1;	// IE id
+	frame[i++] = 8;	// length
+	frame[i++] = 0x82; frame[i++] = 0x84;	// 1, 2 (basic)
+	frame[i++] = 0x8B; frame[i++] = 0x96;	// 5.5, 11 (basic)
+	frame[i++] = 0x0C; frame[i++] = 0x12;	// 6, 9
+	frame[i++] = 0x18; frame[i++] = 0x24;	// 12, 18
+
+	// Extended Supported Rates IE — 24, 36, 48, 54 Mbps
+	frame[i++] = 50;	// IE id
+	frame[i++] = 4;
+	frame[i++] = 0x30; frame[i++] = 0x48;
+	frame[i++] = 0x60; frame[i++] = 0x6C;
+
+	dprintf(RTL8814AU_DRIVER_NAME ": TX assoc request len=%u\n",
+		(unsigned)i);
+	return fTxPath->Transmit(frame, i, kTxQueueMGT, 0, 0,
+		kSecurityNone, false);
+}
+
+
+/*! Handle an authentication response (subtype 11) from the AP. */
+void
+RTL8814AUDevice::_HandleAuthResponse(const uint8* frame, uint32 length)
+{
+	if (length < 30 || fJoinState != kJoinAuthenticating)
+		return;
+
+	// addr2 (SA) at offset 10 must match our target BSSID
+	if (memcmp(frame + 10, fJoinBssid, 6) != 0)
+		return;
+
+	uint16 authAlg = frame[24] | (frame[25] << 8);
+	uint16 authSeq = frame[26] | (frame[27] << 8);
+	uint16 statusCode = frame[28] | (frame[29] << 8);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": RX auth response alg=%u seq=%u "
+		"status=%u\n", (unsigned)authAlg, (unsigned)authSeq,
+		(unsigned)statusCode);
+
+	if (authAlg != 0 || authSeq != 2 || statusCode != 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": auth failed, returning to idle\n");
+		fJoinState = kJoinIdle;
+		return;
+	}
+
+	// Auth OK — send assoc-req
+	fJoinState = kJoinAssociating;
+	status_t status = _SendAssocRequest();
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": assoc-req TX failed: %s\n",
+			strerror(status));
+		fJoinState = kJoinIdle;
+	}
+}
+
+
+/*! Handle an association response (subtype 1) from the AP. */
+void
+RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
+{
+	if (length < 30 || fJoinState != kJoinAssociating)
+		return;
+	if (memcmp(frame + 10, fJoinBssid, 6) != 0)
+		return;
+
+	uint16 capability = frame[24] | (frame[25] << 8);
+	uint16 statusCode = frame[26] | (frame[27] << 8);
+	uint16 aid = (frame[28] | (frame[29] << 8)) & 0x3FFF;
+
+	dprintf(RTL8814AU_DRIVER_NAME ": RX assoc response cap=0x%04x "
+		"status=%u aid=%u\n", (unsigned)capability,
+		(unsigned)statusCode, (unsigned)aid);
+
+	if (statusCode != 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": assoc rejected, returning to idle\n");
+		fJoinState = kJoinIdle;
+		return;
+	}
+
+	// Associated!  Notify the WiFi manager so it can send the
+	// MediaStatusReport H2C and set the connection state for upper
+	// layers to consume via GetLinkState.
+	fJoinState = kJoinConnected;
+	dprintf(RTL8814AU_DRIVER_NAME ": ASSOCIATED to '%s' AID=%u\n",
+		fJoinSsid, (unsigned)aid);
+	// TODO: notify WiFiManager of the association so userland can see
+	// it and DHCP can run.  Calling fWiFiManager->Associate() here
+	// rewrites the chip BSSID register and fires a MediaStatusReport
+	// H2C; one of those wedges the chip's USB control pipe immediately
+	// after the on-air assoc-resp arrives.  Need to bisect which write
+	// is the culprit before re-enabling.
+	(void)fWiFiManager;
+}
+

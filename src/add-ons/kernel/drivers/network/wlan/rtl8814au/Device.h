@@ -78,6 +78,17 @@ private:
 	status_t					_InitRxAggregation();
 	void						_DumpRxState(const char* tag);
 	status_t					_ConfigTrxPath();
+
+	// Open-network join sequencing: TX of auth+assoc requests and RX
+	// dispatch for the responses.  Driven by IOC_HAIKU_JOIN.
+	status_t					_DoJoin(const uint8* bssid,
+									const char* ssid, uint32 ssidLen);
+	status_t					_SendAuthRequest();
+	status_t					_SendAssocRequest();
+	void						_HandleAuthResponse(const uint8* frame,
+									uint32 length);
+	void						_HandleAssocResponse(const uint8* frame,
+									uint32 length);
 	status_t					_InitPageAllocation();
 	status_t					_InitLLTTable();
 	status_t					_InitQueuePriority();
@@ -146,6 +157,16 @@ private:
 	char						fJoinSsid[33];
 	uint32						fJoinSsidLength;
 	uint8						fJoinBssid[6];
+
+	// Open-network auth+assoc state machine driven by IOC_HAIKU_JOIN.
+	enum JoinState {
+		kJoinIdle,
+		kJoinAuthenticating,	// auth-req sent, waiting for auth-resp
+		kJoinAssociating,	// assoc-req sent, waiting for assoc-resp
+		kJoinConnected		// associated; data path active
+	};
+	JoinState					fJoinState;
+	uint16						fJoinSeqCounter;
 	int32						fOpenCount;
 
 	// Synchronization

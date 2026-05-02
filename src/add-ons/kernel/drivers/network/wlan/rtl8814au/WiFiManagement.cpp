@@ -204,6 +204,27 @@ RTL8814AUWiFiManager::StartScan(const uint8* channelList,
 }
 
 
+/*! Look up a scan-discovered BSS by SSID.  Returns NULL if not found.
+	Caller must hold or accept that fBssList may change after this call.
+*/
+const BssEntry*
+RTL8814AUWiFiManager::FindBssBySsid(const char* ssid, uint32 ssidLen) const
+{
+	if (ssid == NULL || ssidLen == 0)
+		return NULL;
+	for (uint32 i = 0; i < kMaxBssEntries; i++) {
+		const BssEntry& e = fBssList[i];
+		if (!e.valid)
+			continue;
+		if (e.ssidLength != ssidLen)
+			continue;
+		if (memcmp(e.ssid, ssid, ssidLen) == 0)
+			return &e;
+	}
+	return NULL;
+}
+
+
 /*! Copy scan results to a caller-provided buffer. Thread-safe.
 
     \param results     Output buffer for BSS entries
