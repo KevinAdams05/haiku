@@ -153,6 +153,13 @@ public:
 	// Returns the number of entries copied.
 	const BssEntry*				FindBssBySsid(const char* ssid,
 									uint32 ssidLen) const;
+
+	// Flip the manager into the connected state from data we already
+	// have on hand.  No USB writes, safe to call from the RX bulk
+	// callback context.  Used by the in-driver MLME after a successful
+	// on-air assoc-resp until we have a worker-thread H2C path.
+	void						MarkConnected(const uint8* bssid,
+									const char* ssid);
 	uint32						GetScanResults(BssEntry* results,
 									uint32 maxEntries);
 

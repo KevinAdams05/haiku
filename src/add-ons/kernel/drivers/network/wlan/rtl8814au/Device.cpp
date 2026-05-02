@@ -2307,12 +2307,17 @@ RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
 	fJoinState = kJoinConnected;
 	dprintf(RTL8814AU_DRIVER_NAME ": ASSOCIATED to '%s' AID=%u\n",
 		fJoinSsid, (unsigned)aid);
-	// TODO: notify WiFiManager of the association so userland can see
-	// it and DHCP can run.  Calling fWiFiManager->Associate() here
-	// rewrites the chip BSSID register and fires a MediaStatusReport
-	// H2C; one of those wedges the chip's USB control pipe immediately
-	// after the on-air assoc-resp arrives.  Need to bisect which write
-	// is the culprit before re-enabling.
-	(void)fWiFiManager;
+	// Flip the manager state to connected so userland (ETHER_GET_LINK_
+	// STATE, GetLinkState) sees the link as up.  Skip the
+	// MediaStatusReport H2C — it deadlocks when issued from this RX
+	// bulk-callback context, so it'll have to move onto a worker
+	// thread later.  The MAC association itself already happened on
+	// the air; this just makes the network stack believe it.
+	if (fWiFiManager != NULL)
+		fWiFiManager->MarkConnected(fJoinBssid, fJoinSsid);
+	// Wake net_server so it re-polls ETHER_GET_LINK_STATE immediately
+	// instead of waiting for its next periodic check.
+	if (fLinkStateSem >= 0)
+		release_sem_etc(fLinkStateSem, 1, B_DO_NOT_RESCHEDULE);
 }
 

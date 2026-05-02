@@ -204,6 +204,26 @@ RTL8814AUWiFiManager::StartScan(const uint8* channelList,
 }
 
 
+/*! Mark the manager as connected without any USB I/O.  Called from
+	the driver's in-driver MLME state machine after the on-air assoc-
+	resp is received, so userland sees the link as up via
+	ETHER_GET_LINK_STATE.  Until we move the post-assoc H2C onto a
+	worker thread, we can't do the full Associate() path here.
+*/
+void
+RTL8814AUWiFiManager::MarkConnected(const uint8* bssid, const char* ssid)
+{
+	MutexLocker locker(fLock);
+	if (bssid != NULL)
+		memcpy(fConnectedBssid, bssid, 6);
+	if (ssid != NULL)
+		strlcpy(fConnectedSsid, ssid, sizeof(fConnectedSsid));
+	else
+		fConnectedSsid[0] = '\0';
+	fState = kWiFiStateConnected;
+}
+
+
 /*! Look up a scan-discovered BSS by SSID.  Returns NULL if not found.
 	Caller must hold or accept that fBssList may change after this call.
 */
@@ -647,7 +667,8 @@ RTL8814AUWiFiManager::_HandleScanComplete(const uint8* payload,
 
 /*! Block until the current scan completes (or timeout elapses).
     \param timeout  Relative timeout in microseconds, or B_INFINITE_TIMEOUT.
-    eturn  B_OK if the scan completed before the timeout, B_TIMED_OUT
+    
+eturn  B_OK if the scan completed before the timeout, B_TIMED_OUT
              if not, or another error.
 */
 status_t
