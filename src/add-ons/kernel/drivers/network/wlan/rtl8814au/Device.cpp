@@ -1837,15 +1837,67 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 	if (buffer == NULL || numBytes == NULL || *numBytes == 0)
 		return B_BAD_VALUE;
 
-	// Determine if this is a broadcast/multicast frame by checking
-	// the destination MAC address (first byte, bit 0 = multicast)
-	const uint8* frameData = static_cast<const uint8*>(buffer);
-	bool isBroadcast = (frameData[0] & 0x01) != 0;
+	// The network stack hands us an Ethernet frame:
+	//   [6] dst MAC, [6] src MAC, [2] ethertype, [N] payload
+	// Convert to an 802.11 infrastructure-mode data frame:
+	//   FrameControl (Data, ToDS=1), Dur, Addr1=BSSID, Addr2=our MAC,
+	//   Addr3=real dst, SeqCtrl, LLC/SNAP, payload.
+	// Without this conversion the chip TX's our ethernet frame as a
+	// raw 802.11 payload and the AP can't parse it — DHCP DISCOVERs go
+	// out but the gateway never sees them.
+	if (*numBytes < 14) {
+		*numBytes = 0;
+		return B_BAD_VALUE;
+	}
+	if (device->fJoinState != kJoinConnected) {
+		// No association — drop the frame.
+		*numBytes = 0;
+		return B_DEV_NOT_READY;
+	}
 
-	// Use best-effort queue and OFDM 24 Mbps as a safe default rate.
-	// The rate adaptation firmware will adjust this over time.
-	status_t status = device->fTxPath->Transmit(frameData,
-		(uint32)*numBytes, kTxQueueBE, kRateOFDM24, 0,
+	const uint8* eth = static_cast<const uint8*>(buffer);
+	const uint8* dstMAC = &eth[0];
+	const uint8* srcMAC = &eth[6];
+	uint16 etherType = ((uint16)eth[12] << 8) | eth[13];
+	const uint8* payload = &eth[14];
+	uint32 payloadLen = (uint32)*numBytes - 14;
+
+	bool isBroadcast = (dstMAC[0] & 0x01) != 0;
+
+	// Build the 802.11 + LLC/SNAP header on the stack.  Max payload
+	// fits comfortably under the chip's TX buffer (kUsbTxBufferSize)
+	// after the 24+8 byte header and 40-byte TX descriptor.
+	uint8 frame[24 + 8 + 1600];
+	if (payloadLen > sizeof(frame) - 32) {
+		*numBytes = 0;
+		return B_BUFFER_OVERFLOW;
+	}
+
+	// 802.11 header
+	frame[0] = 0x08;			// FC[0]: Data frame (type 2, subtype 0)
+	frame[1] = 0x01;			// FC[1]: ToDS = 1
+	frame[2] = 0;				// Duration low
+	frame[3] = 0;				// Duration high
+	memcpy(&frame[4], device->fJoinBssid, 6);	// Address1 = BSSID
+	memcpy(&frame[10], srcMAC, 6);				// Address2 = source
+	memcpy(&frame[16], dstMAC, 6);				// Address3 = real dest
+	frame[22] = 0;			// SeqCtrl low (HW will fill via HWSEQ_EN)
+	frame[23] = 0;			// SeqCtrl high
+
+	// LLC/SNAP encapsulation for IP-over-802.11
+	frame[24] = 0xAA;		// LLC DSAP
+	frame[25] = 0xAA;		// LLC SSAP
+	frame[26] = 0x03;		// LLC control
+	frame[27] = 0x00;		// SNAP OUI[0]
+	frame[28] = 0x00;		// SNAP OUI[1]
+	frame[29] = 0x00;		// SNAP OUI[2]
+	frame[30] = (uint8)(etherType >> 8);
+	frame[31] = (uint8)(etherType & 0xFF);
+
+	memcpy(&frame[32], payload, payloadLen);
+
+	status_t status = device->fTxPath->Transmit(frame,
+		32 + payloadLen, kTxQueueBE, kRateOFDM24, 0,
 		kSecurityNone, isBroadcast);
 
 	if (status != B_OK)
@@ -2152,6 +2204,13 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 				"failed: %s\n", (unsigned)apChannel, strerror(chStatus));
 		}
 	}
+
+	// Tell the chip we're operating as a STA in an infrastructure BSS.
+	// Without this the MAC won't auto-ACK frames addressed to us, so
+	// the AP times us out after sending assoc-resp without an ACK and
+	// silently drops us from its client table — even though we logged
+	// the assoc-resp and locally believe we're associated.
+	fRegisterIO->Write8(kRegMSR, kMSR_Infra);
 
 	// Set chip BSSID register so MAC frame filter accepts AP traffic
 	for (uint32 i = 0; i < 6; i++)

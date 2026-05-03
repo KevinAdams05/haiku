@@ -326,6 +326,16 @@ static const uint8 kBcnValidBit				= (1 << 7);
 // ---------------------------------------------------------------------------
 
 static const uint16 kRegCR					= 0x0100;
+
+// MSR (Mode Setting Register) — selects the network operating type.
+// Without setting this to MSR_INFRA the chip never auto-ACKs frames
+// addressed to us, so any AP we associate to retries its assoc-resp /
+// data frames, gives up, and drops us from its client table.
+static const uint16 kRegMSR					= 0x0102;
+static const uint8  kMSR_NoLink				= 0x00;
+static const uint8  kMSR_AdHoc				= 0x01;
+static const uint8  kMSR_Infra				= 0x02;	// STA in BSS
+static const uint8  kMSR_AP					= 0x03;
 static const uint16 kRegPBP				= 0x0104;
 static const uint16 kRegTrxDmaCfg			= 0x010C;	// REG_TRXDMA_CTRL
 static const uint16 kRegTrxFF_BNDY			= 0x0114;

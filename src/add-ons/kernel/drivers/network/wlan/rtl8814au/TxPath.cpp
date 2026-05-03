@@ -410,9 +410,20 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 		qslt = 0x02;
 
 	// For management frames morrownr's pcap shows MACID=1, rate_id=8.
+	// Data frames also use MACID=1 because we haven't sent the H2C
+	// MacIDCfg that would set up MACID 0's rate-adaptation table —
+	// without that, frames TX'd with MACID 0 are silently dropped by
+	// the chip's MAC scheduler.  rate_id=8 indexes the chip's default
+	// rate set which covers OFDM 6-54 Mbps.
 	uint8 effectiveMacID = macID;
 	uint32 rateID = 0;
 	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
+		if (effectiveMacID == 0)
+			effectiveMacID = 1;
+		rateID = 8;
+	} else {
+		// Data frames: same MACID/rate_id workaround as mgmt frames
+		// until we get the H2C MacIDCfg working post-associate.
 		if (effectiveMacID == 0)
 			effectiveMacID = 1;
 		rateID = 8;
@@ -425,14 +436,18 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 		| (((uint32)secType << kTxDescSecType_Shift)
 			& kTxDescSecType_Mask);
 
-	// DWORD 2: aggregation enable for data frames (not management).
+	// DWORD 2: aggregation enable.  We previously set kTxDescAGGEn
+	// for data frames here, but the chip never actually emits them —
+	// almost certainly because we haven't configured A-MPDU/A-MSDU
+	// state, so the chip waits for aggregation that never comes and
+	// silently discards the queued frame.  Leave AGG clear until
+	// aggregation is properly set up.
+	//
 	// morrownr's probe-req sets the high byte of dword2 to 0x3F (NAV /
 	// RTS-control bits).  Setting those bits hangs the chip's MAC
 	// scheduler — the queue stops draining and the USB control pipe
 	// times out.  Leave them clear; mgmt frames don't need them.
 	uint32 dword2 = 0;
-	if (queueSelect != kTxQueueMGT && queueSelect != kTxQueueCMD)
-		dword2 |= kTxDescAGGEn;
 
 	// DWORD 3: sequence number + USE_RATE / DISABLE_FB / NAV_USE_HDR.
 	// USE_RATE (bit 8) tells the chip to use the data_rate in dword4
