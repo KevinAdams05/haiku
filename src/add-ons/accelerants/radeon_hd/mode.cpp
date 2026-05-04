@@ -379,11 +379,18 @@ is_mode_supported(display_mode* mode)
 	if (gInfo->shared_info->has_edid
 		&& gDisplay[crtid]->foundRanges) {
 
+		// All four range fields are uint32. Phrasing the lower bound as
+		// `freq < min - 1` underflows to 0xFFFFFFFF when min == 0 and
+		// rejects every mode. Use `freq + 1 < min` to keep the same
+		// ±1 unit tolerance without underflowing.
+
 		// validate horizontal frequency range
 		uint32 hfreq = mode->timing.pixel_clock / mode->timing.h_total;
 		if (hfreq > gDisplay[crtid]->hfreqMax + 1
-			|| hfreq < gDisplay[crtid]->hfreqMin - 1) {
-			//TRACE("!!! mode below falls outside of hfreq range!\n");
+			|| hfreq + 1 < gDisplay[crtid]->hfreqMin) {
+			TRACE("%s: hfreq %" B_PRIu32 " outside EDID range [%" B_PRIu32
+				", %" B_PRIu32 "]\n", __func__, hfreq,
+				gDisplay[crtid]->hfreqMin, gDisplay[crtid]->hfreqMax);
 			sane = false;
 		}
 
@@ -391,8 +398,10 @@ is_mode_supported(display_mode* mode)
 		uint32 vfreq = mode->timing.pixel_clock / ((mode->timing.v_total
 			* mode->timing.h_total) / 1000);
 		if (vfreq > gDisplay[crtid]->vfreqMax + 1
-			|| vfreq < gDisplay[crtid]->vfreqMin - 1) {
-			//TRACE("!!! mode below falls outside of vfreq range!\n");
+			|| vfreq + 1 < gDisplay[crtid]->vfreqMin) {
+			TRACE("%s: vfreq %" B_PRIu32 " outside EDID range [%" B_PRIu32
+				", %" B_PRIu32 "]\n", __func__, vfreq,
+				gDisplay[crtid]->vfreqMin, gDisplay[crtid]->vfreqMax);
 			sane = false;
 		}
 	}

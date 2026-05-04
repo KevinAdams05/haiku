@@ -229,6 +229,25 @@ detect_crt_ranges(uint32 crtid)
 
 		if (monitor->monitor_desc_type == EDID1_MONITOR_RANGES) {
 			edid1_monitor_range range = monitor->data.monitor_range;
+			// Some monitors emit a MONITOR_RANGES descriptor with zeroed,
+			// degenerate (max == min), or otherwise nonsensical bounds.
+			// Trusting those silently rejects every candidate mode in
+			// is_mode_supported, leaving the box stuck on the framebuffer
+			// fallback.
+			//
+			// Observed in the wild: HD 7470/8470 with a monitor that emits
+			// a range descriptor of h = 160-160 kHz, far above any real
+			// horizontal scan rate. We can't tell whether the EDID is
+			// genuinely malformed or another descriptor was misidentified
+			// as RANGES; either way, rejecting it lets the modes through.
+			if (range.min_h == 0 || range.max_h == 0 || range.min_v == 0
+				|| range.max_v == 0 || range.max_h <= range.min_h
+				|| range.max_v <= range.min_v) {
+				TRACE("%s: ignoring bogus EDID range descriptor "
+					"(h=%u-%u kHz, v=%u-%u Hz)\n", __func__,
+					range.min_h, range.max_h, range.min_v, range.max_v);
+				return B_ERROR;
+			}
 			gDisplay[crtid]->vfreqMin = range.min_v;   /* in Hz */
 			gDisplay[crtid]->vfreqMax = range.max_v;
 			gDisplay[crtid]->hfreqMin = range.min_h;   /* in kHz */
@@ -832,6 +851,20 @@ display_crtc_fb_set(uint8 crtcID, display_mode* mode)
 	Write32(OUT, regs->grphSecondarySurfaceAddr, (fbAddress & 0xFFFFFFFF));
 
 	if (info.chipsetID >= RADEON_R600) {
+		// Force linear-aligned scanout. GRPH_CONTROL's ARRAY_MODE field
+		// (bits 20-23) is sticky from VBIOS POST: on cards where VBIOS
+		// leaves a tiled mode set (observed on Caicos / HD 7470), writing
+		// only DEPTH/FORMAT here keeps the tiling and scrambles scanout
+		// — symptom is a flat-color screen with garbled text fragments
+		// only on the first few scanlines, since the scanout walks off
+		// real framebuffer memory after one tile row. Linux always sets
+		// ARRAY_MODE_LINEAR_ALIGNED for scanout buffers.
+		if (info.dceMajor >= 4) {
+			fbFormat |= EVERGREEN_GRPH_ARRAY_MODE(
+				EVERGREEN_GRPH_ARRAY_LINEAR_ALIGNED);
+		} else {
+			fbFormat |= R600_D1GRPH_ARRAY_MODE_LINEAR_ALIGNED;
+		}
 		Write32(CRT, regs->grphControl, fbFormat);
 		Write32(CRT, regs->grphSwapControl, fbSwap);
 	}
