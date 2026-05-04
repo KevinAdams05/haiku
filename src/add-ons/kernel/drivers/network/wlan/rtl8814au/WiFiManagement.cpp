@@ -204,6 +204,18 @@ RTL8814AUWiFiManager::StartScan(const uint8* channelList,
 }
 
 
+/*! Public wrapper around the internal H2C mailbox send path so the
+	driver's post-assoc worker thread can fire RA_INFO and
+	MEDIA_STATUS_RPT commands without poking _SendH2CCommand directly.
+*/
+status_t
+RTL8814AUWiFiManager::SendH2C(uint8 commandID, const uint8* payload,
+	uint32 payloadLength)
+{
+	return _SendH2CCommand(commandID, payload, payloadLength);
+}
+
+
 /*! Mark the manager as connected without any USB I/O.  Called from
 	the driver's in-driver MLME state machine after the on-air assoc-
 	resp is received, so userland sees the link as up via

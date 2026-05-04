@@ -74,6 +74,9 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fRxRingHead = 0;
 	fRxRingTail = 0;
 	fLinkStateSem = -1;
+	fPostAssocSem = -1;
+	fPostAssocThread = -1;
+	fPostAssocStop = false;
 	fScanNotifierThread = -1;
 	strlcpy(fDeviceName, deviceName, sizeof(fDeviceName));
 	mutex_init(&fLock, "rtl8814au:device");
@@ -171,6 +174,8 @@ RTL8814AUDevice::~RTL8814AUDevice()
 
 	if (fRxDataReady >= 0)
 		delete_sem(fRxDataReady);
+	if (fPostAssocSem >= 0)
+		delete_sem(fPostAssocSem);
 
 	mutex_destroy(&fLock);
 }
@@ -511,6 +516,27 @@ RTL8814AUDevice::_InitHardware()
 	fJoinState = kJoinIdle;
 	fJoinSeqCounter = 0;
 	fHardwareInitialized = true;
+
+	// Spawn the post-assoc worker.  It blocks on fPostAssocSem until
+	// _HandleAssocResponse releases it, then issues the firmware H2C
+	// setup (RA_INFO + MEDIA_STATUS_RPT) from a context that can
+	// safely block on USB control transfers.
+	fPostAssocSem = create_sem(0, "rtl8814au:post_assoc");
+	if (fPostAssocSem >= 0) {
+		fPostAssocThread = spawn_kernel_thread(_PostAssocThreadEntry,
+			"rtl8814au:post_assoc", B_NORMAL_PRIORITY, this);
+		if (fPostAssocThread >= 0) {
+			resume_thread(fPostAssocThread);
+		} else {
+			dprintf(RTL8814AU_DRIVER_NAME ": failed to spawn post-assoc "
+				"worker: %s\n", strerror(fPostAssocThread));
+			delete_sem(fPostAssocSem);
+			fPostAssocSem = -1;
+		}
+	} else {
+		dprintf(RTL8814AU_DRIVER_NAME ": failed to create post-assoc "
+			"sem: %s\n", strerror(fPostAssocSem));
+	}
 
 	// TX path verification: send a single broadcast probe-request frame.
 	// If TX works, we should see APs responding with unicast probe-responses
@@ -1113,6 +1139,19 @@ RTL8814AUDevice::_Shutdown()
 	if (notifier >= 0) {
 		status_t threadResult;
 		wait_for_thread(notifier, &threadResult);
+	}
+
+	// Reap the post-assoc worker before WiFiManager goes away.  Setting
+	// fPostAssocStop = true and releasing the sem lets the worker exit
+	// its loop on the next iteration.
+	thread_id postAssoc = fPostAssocThread;
+	fPostAssocThread = -1;
+	fPostAssocStop = true;
+	if (fPostAssocSem >= 0)
+		release_sem_etc(fPostAssocSem, 1, B_DO_NOT_RESCHEDULE);
+	if (postAssoc >= 0) {
+		status_t threadResult;
+		wait_for_thread(postAssoc, &threadResult);
 	}
 
 	// Stop the WiFi management module (interrupt IN)
@@ -1897,7 +1936,7 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 	memcpy(&frame[32], payload, payloadLen);
 
 	status_t status = device->fTxPath->Transmit(frame,
-		32 + payloadLen, kTxQueueBE, kRateOFDM24, 0,
+		32 + payloadLen, kTxQueueBE, kRateCCK1, 0,
 		kSecurityNone, isBroadcast);
 
 	if (status != B_OK)
@@ -2210,7 +2249,11 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 	// the AP times us out after sending assoc-resp without an ACK and
 	// silently drops us from its client table — even though we logged
 	// the assoc-resp and locally believe we're associated.
+	uint8 msrBefore = fRegisterIO->Read8(kRegMSR);
 	fRegisterIO->Write8(kRegMSR, kMSR_Infra);
+	uint8 msrAfter = fRegisterIO->Read8(kRegMSR);
+	dprintf(RTL8814AU_DRIVER_NAME ": MSR before=0x%02x after=0x%02x"
+		" (want 0x%02x)\n", msrBefore, msrAfter, kMSR_Infra);
 
 	// Set chip BSSID register so MAC frame filter accepts AP traffic
 	for (uint32 i = 0; i < 6; i++)
@@ -2378,5 +2421,120 @@ RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
 	// instead of waiting for its next periodic check.
 	if (fLinkStateSem >= 0)
 		release_sem_etc(fLinkStateSem, 1, B_DO_NOT_RESCHEDULE);
+	// Wake the post-assoc worker so it issues the firmware H2C setup
+	// (RA_INFO + MEDIA_STATUS_RPT) from a context that can safely
+	// block on USB control transfers.
+	if (fPostAssocSem >= 0)
+		release_sem_etc(fPostAssocSem, 1, B_DO_NOT_RESCHEDULE);
 }
+
+
+/*! Post-associate worker thread.  Fires once per assoc-resp via
+    fPostAssocSem.  Runs the H2C sequence the firmware needs in order
+    to actually TX our data frames on-air:
+
+      1. RA_INFO (H2C 0x40):  rate-adaptation table for MACID 1 —
+         without this, the chip's MAC scheduler has no rate set for
+         our STA and silently discards every queued data frame.
+      2. MEDIA_STATUS_RPT (H2C 0x01): tells the firmware MACID 1 is
+         a connected peer so it manages keepalives / power-save.
+
+    These can't be issued from _HandleAssocResponse directly because
+    that runs on the USB bulk-callback thread; submitting another
+    USB control transfer from there deadlocks the stack.
+*/
+int32
+RTL8814AUDevice::_PostAssocThreadEntry(void* arg)
+{
+	RTL8814AUDevice* device = static_cast<RTL8814AUDevice*>(arg);
+	device->_PostAssocLoop();
+	return 0;
+}
+
+
+void
+RTL8814AUDevice::_PostAssocLoop()
+{
+	while (!fPostAssocStop) {
+		status_t status = acquire_sem(fPostAssocSem);
+		if (status != B_OK || fPostAssocStop)
+			break;
+		if (fRemoved)
+			continue;
+		status_t setupStatus = _DoPostAssocSetup();
+		dprintf(RTL8814AU_DRIVER_NAME ": post-assoc setup: %s\n",
+			strerror(setupStatus));
+	}
+}
+
+
+/*! Issue the firmware-side connection setup.  Called from the worker
+    thread, so synchronous USB control transfers are safe here.
+
+    Sequence (matching the rtw88 reference driver):
+      1. Write the AP's BSSID into kRegBSSID so the chip's MAC frame
+         filter recognises traffic from / to this BSS.  (We already
+         wrote it in _DoJoin, but Associate() in WiFiManager does it
+         too — keep consistent.)
+      2. Send RA_INFO H2C — MACID 1, rate_id 8 (OFDM), BW 20 MHz,
+         rate mask covering OFDM 6–54 Mbps.  The rate adaptation
+         engine uses this to pick a rate per data-frame TX.
+      3. Send MEDIA_STATUS_RPT H2C — connect=1, MACID=1.
+*/
+status_t
+RTL8814AUDevice::_DoPostAssocSetup()
+{
+	if (fWiFiManager == NULL || fRegisterIO == NULL)
+		return B_NO_INIT;
+
+	// Snapshot the BSSID under lock; the worker may run after a leave/
+	// rejoin race so don't trust live fJoinBssid without serialising.
+	uint8 bssid[6];
+	{
+		MutexLocker locker(fLock);
+		memcpy(bssid, fJoinBssid, 6);
+	}
+
+	dprintf(RTL8814AU_DRIVER_NAME ": post-assoc: BSSID %02x:%02x:%02x:"
+		"%02x:%02x:%02x\n", bssid[0], bssid[1], bssid[2],
+		bssid[3], bssid[4], bssid[5]);
+
+	// 1. Re-write BSSID register — idempotent with _DoJoin's write.
+	for (uint32 i = 0; i < 6; i++)
+		fRegisterIO->Write8(kRegBSSID + i, bssid[i]);
+
+	// 2. RA_INFO (H2C 0x40 = kH2C_MacIDCfg).  Field layout (from rtw88
+	//    rtw_fw_send_ra_info, payload bytes after the 1-byte cmd ID):
+	//      byte 0:        MACID
+	//      byte 1 [0:4]:  rate_id (5 bits)
+	//      byte 2 [0:1]:  BW_MODE (00=20MHz, 01=40MHz, 10=80MHz)
+	//      bytes 3..6:    rate mask (32 bits, low first) — we send the
+	//                     low 24 bits since H2C payload is 6 bytes.
+	const uint8 kMacID = 0;
+	const uint8 kRateId = 8;	// OFDM-only rate group
+	uint32 rateMask = 0x000FF0u;	// OFDM 6–54 Mbps (bits 4-11)
+	uint8 raPayload[6] = { 0 };
+	raPayload[0] = kMacID;
+	raPayload[1] = kRateId & 0x1F;
+	raPayload[2] = 0;			// BW_MODE = 20 MHz
+	raPayload[3] = (uint8)(rateMask & 0xFF);
+	raPayload[4] = (uint8)((rateMask >> 8) & 0xFF);
+	raPayload[5] = (uint8)((rateMask >> 16) & 0xFF);
+	status_t raStatus = fWiFiManager->SendH2C(kH2C_MacIDCfg,
+		raPayload, sizeof(raPayload));
+	dprintf(RTL8814AU_DRIVER_NAME ": post-assoc RA_INFO: %s\n",
+		strerror(raStatus));
+
+	// 3. MEDIA_STATUS_RPT (H2C 0x01) — connect=1, MACID=1.
+	uint8 msPayload[2] = { 1, kMacID };
+	status_t msStatus = fWiFiManager->SendH2C(kH2C_MediaStatusRpt,
+		msPayload, sizeof(msPayload));
+	dprintf(RTL8814AU_DRIVER_NAME ": post-assoc MEDIA_STATUS_RPT: %s\n",
+		strerror(msStatus));
+
+	return (raStatus == B_OK && msStatus == B_OK) ? B_OK : B_ERROR;
+}
+
+
+
 

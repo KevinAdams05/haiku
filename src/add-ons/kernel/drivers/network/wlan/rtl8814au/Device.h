@@ -89,6 +89,14 @@ private:
 									uint32 length);
 	void						_HandleAssocResponse(const uint8* frame,
 									uint32 length);
+
+	// Post-associate worker — fires the H2C sequence (RA_INFO and
+	// MEDIA_STATUS_RPT) that primes the chip's firmware to actually
+	// TX our data frames on-air.  Runs off the RX bulk-callback path
+	// because synchronous USB control transfers from there deadlock.
+	static int32				_PostAssocThreadEntry(void* arg);
+	void						_PostAssocLoop();
+	status_t					_DoPostAssocSetup();
 	status_t					_InitPageAllocation();
 	status_t					_InitLLTTable();
 	status_t					_InitQueuePriority();
@@ -167,6 +175,11 @@ private:
 	};
 	JoinState					fJoinState;
 	uint16						fJoinSeqCounter;
+
+	// Worker thread + semaphore for the post-associate H2C sequence.
+	sem_id						fPostAssocSem;
+	thread_id					fPostAssocThread;
+	bool						fPostAssocStop;
 	int32						fOpenCount;
 
 	// Synchronization

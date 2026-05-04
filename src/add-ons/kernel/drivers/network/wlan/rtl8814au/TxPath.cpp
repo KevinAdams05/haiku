@@ -422,10 +422,8 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 			effectiveMacID = 1;
 		rateID = 8;
 	} else {
-		// Data frames: same MACID/rate_id workaround as mgmt frames
-		// until we get the H2C MacIDCfg working post-associate.
-		if (effectiveMacID == 0)
-			effectiveMacID = 1;
+		// Data frames: MACID=0 is the AP we're connected to (configured
+		// via the post-assoc RA_INFO H2C).  rate_id=8 = OFDM rate group.
 		rateID = 8;
 	}
 

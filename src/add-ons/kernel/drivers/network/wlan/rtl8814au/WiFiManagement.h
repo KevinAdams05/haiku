@@ -160,6 +160,14 @@ public:
 	// on-air assoc-resp until we have a worker-thread H2C path.
 	void						MarkConnected(const uint8* bssid,
 									const char* ssid);
+
+	// Public thin wrapper around the H2C send path.  Used by the
+	// device's post-assoc worker thread to fire RA_INFO + MEDIA_
+	// STATUS_RPT after on-air assoc.  Don't call from contexts that
+	// hold the USB bulk endpoint mutex (RX/TX callbacks).
+	status_t					SendH2C(uint8 commandID,
+									const uint8* payload,
+									uint32 payloadLength);
 	uint32						GetScanResults(BssEntry* results,
 									uint32 maxEntries);
 
