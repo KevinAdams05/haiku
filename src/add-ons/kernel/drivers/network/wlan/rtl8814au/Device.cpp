@@ -1669,9 +1669,18 @@ RTL8814AUDevice::Control(void* cookie, uint32 op, void* args, size_t length)
 	if (device == NULL || device->fRemoved)
 		return B_DEV_NOT_READY;
 
-	dprintf(RTL8814AU_DRIVER_NAME ": Control op=0x%" B_PRIx32 " op_dec=%" B_PRIu32 " len=%" B_PRIuSIZE " hi=0x%08x lo=0x%08x\n", (uint32)op, (uint32)op, length, (unsigned)((uint64)op >> 32), (unsigned)(uint64)op);
-	if (op == 0x2412 || op == 0x2413)
-		device->_DumpRxState(op == 0x2412 ? "scan-set" : "scan-get");
+	// Control() runs on every ifconfig/net_server poll — once
+	// the link is up this can fire many times per second.  Log
+	// only the first 4 invocations of each opcode so we still
+	// catch unknown ops at startup but don't flood syslog.
+	{
+		static uint32 sControlLogTotal = 0;
+		if (sControlLogTotal < 16) {
+			sControlLogTotal++;
+			dprintf(RTL8814AU_DRIVER_NAME ": Control op=0x%" B_PRIx32
+				" len=%" B_PRIuSIZE "\n", (uint32)op, length);
+		}
+	}
 
 	switch (op) {
 		case ETHER_INIT:
@@ -1977,8 +1986,11 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		// Diag: count mgmt subtypes
 		static uint32 sMgmtStats[16] = {0};
 		sMgmtStats[frameSubtype]++;
+		// In a busy environment with ~20 networks beaconing, mgmt
+		// frames arrive at ~50/sec.  Log every 5000 frames (~every
+		// 100 sec) so this stays a heartbeat, not a fire hose.
 		static uint32 sMgmtTick = 0;
-		if (++sMgmtTick >= 200) {
+		if (++sMgmtTick >= 5000) {
 			sMgmtTick = 0;
 			dprintf(RTL8814AU_DRIVER_NAME ": mgmt subtypes: beacon(8)=%u probe(5)=%u auth(11)=%u assoc(1)=%u disasoc(10)=%u\n",
 				(unsigned)sMgmtStats[8], (unsigned)sMgmtStats[5],
