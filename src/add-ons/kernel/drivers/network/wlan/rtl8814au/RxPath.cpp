@@ -409,8 +409,12 @@ RTL8814AURxPath::_RxCallback(void* cookie, status_t status, void* data,
 		return;
 
 	rxPath->fTransfersCompleted++;
-	// Log first 8 transfers, then every 64th, to detect RX activity without flooding
-	if (rxPath->fTransfersCompleted <= 8 || (rxPath->fTransfersCompleted & 63) == 0) {
+	// At ~225 callbacks/sec on this hardware, even every-64th is
+	// ~3.5 syslog lines/sec, which contributed to the BFS log-rotation
+	// panic.  Log first 8 to confirm RX comes alive at boot, then
+	// only every 4096 (~every 18 sec) as a heartbeat.
+	if (rxPath->fTransfersCompleted <= 8
+		|| (rxPath->fTransfersCompleted & 4095) == 0) {
 		dprintf(RTL8814AU_DRIVER_NAME ": RX cb #%" B_PRIu32 " status=%s len=%" B_PRIuSIZE " frames=%" B_PRIu32 " crc=%" B_PRIu32 " drop=%" B_PRIu32 "\n",
 			rxPath->fTransfersCompleted, strerror(status), actualLength,
 			rxPath->fFramesReceived, rxPath->fCrcErrors, rxPath->fFramesDropped);
