@@ -2005,10 +2005,34 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		return;
 	}
 
-	// Data frame — queue into the RX ring buffer for Read()
-	if (frameLength > kRxRingFrameMaxSize) {
+	// Data frame — convert from 802.11 + LLC/SNAP to ethernet so
+	// the network stack (which sees us as Hardware type: Ethernet)
+	// can parse it.  Without this, the kernel tries to read bytes
+	// 0-13 of the 802.11 header as an ethernet header, fails, and
+	// silently drops every DHCP / ARP / IP packet we receive.
+	//
+	// 802.11 frame layout (FromDS=1, what we get from the AP):
+	//   [2] FC, [2] Dur, [6] Addr1=our MAC, [6] Addr2=BSSID,
+	//   [6] Addr3=original src, [2] SeqCtrl, [8] LLC/SNAP, [N] payload
+	//
+	// Ethernet output:
+	//   [6] dst=Addr1, [6] src=Addr3, [2] ethertype, [N] payload
+	const uint32 k80211HeaderLen = 24;
+	const uint32 kLLCSnapLen = 8;
+	if (frameLength < k80211HeaderLen + kLLCSnapLen)
+		return;
+
+	// Verify LLC/SNAP encapsulation; if it isn't RFC1042-style,
+	// the frame isn't IP/ARP and we'd be feeding garbage upstream.
+	const uint8* llc = frameData + k80211HeaderLen;
+	if (llc[0] != 0xAA || llc[1] != 0xAA || llc[2] != 0x03)
+		return;
+
+	uint32 payloadLen = frameLength - k80211HeaderLen - kLLCSnapLen;
+	uint32 ethLen = 14 + payloadLen;
+	if (ethLen > kRxRingFrameMaxSize) {
 		dprintf(RTL8814AU_DRIVER_NAME ": RX frame too large for ring: "
-			"%" B_PRIu32 " bytes\n", frameLength);
+			"%" B_PRIu32 " bytes\n", ethLen);
 		return;
 	}
 
@@ -2026,10 +2050,15 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		acquire_sem_etc(device->fRxDataReady, 1, B_RELATIVE_TIMEOUT, 0);
 	}
 
-	// Copy frame into the ring slot
+	// Build the ethernet frame in-place in the ring slot.
 	RxRingEntry* entry = &device->fRxRing[head];
-	memcpy(entry->data, frameData, frameLength);
-	entry->length = frameLength;
+	memcpy(&entry->data[0], &frameData[4], 6);		// dst = Addr1
+	memcpy(&entry->data[6], &frameData[16], 6);		// src = Addr3
+	entry->data[12] = llc[6];		// ethertype hi
+	entry->data[13] = llc[7];		// ethertype lo
+	memcpy(&entry->data[14], &frameData[k80211HeaderLen + kLLCSnapLen],
+		payloadLen);
+	entry->length = ethLen;
 
 	device->fRxRingHead = nextHead;
 	locker.Unlock();
