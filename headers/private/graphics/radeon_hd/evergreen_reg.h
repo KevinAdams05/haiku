@@ -269,4 +269,55 @@
 #define EVERGREEN_DC_GPIO_HPD_Y						0x64bc
 
 
+/* Display Bandwidth / Watermark / Priority registers
+ *
+ * The display engine arbitrates with other memory clients via two
+ * watermark slots (A = high-clock, B = low-clock for DPM transitions)
+ * and a priority counter per CRTC. Without these programmed, scanout
+ * DMA can starve at high resolutions / refresh rates and the display
+ * FIFO underruns — symptom is stride-aliased garbage at modes the chip
+ * can otherwise drive cleanly. The forced-PRIORITY_ALWAYS_ON path is
+ * what fixes 4K scanout on bandwidth-tight cards (e.g. Caicos).
+ *
+ * The LB-split and PRIORITY counters live at the same absolute offsets
+ * across DCE 4 (Evergreen), DCE 5 (Northern Islands), DCE 6 (Southern
+ * Islands), and DCE 8 (Sea Islands) — each CRTC adds an offset from
+ * EVERGREEN_CRTCn_REGISTER_OFFSET above. The DPG_PIPE_* registers exist
+ * only on DCE 5+; DCE 4 uses a different PIPE_* pair at 0x0bf0 / 0x0bf4
+ * with a fixed per-pipe stride of 0x20.
+ */
+#define EVERGREEN_DC_LB_MEMORY_SPLIT				0x6b0c
+#define		EVERGREEN_DC_LB_MEMORY_SPLIT_MASK		0x00000003
+#define		EVERGREEN_DC_LB_MEMORY_CONFIG(x)		(((x) & 0xf) << 20)
+#define		EVERGREEN_DC_LB_DISP1_END_ADR_SHIFT		4
+#define		EVERGREEN_DC_LB_MEMORY_SPLIT_D1HALF_D2HALF	0
+#define		EVERGREEN_DC_LB_MEMORY_SPLIT_D1_3Q_D2_1Q	1
+#define		EVERGREEN_DC_LB_MEMORY_SPLIT_D1_ONLY		2
+#define		EVERGREEN_DC_LB_MEMORY_SPLIT_D1_1Q_D2_3Q	3
+
+#define EVERGREEN_PRIORITY_A_CNT					0x6b18
+#define EVERGREEN_PRIORITY_B_CNT					0x6b1c
+#define		EVERGREEN_PRIORITY_MARK_MASK			0x7fff
+#define		EVERGREEN_PRIORITY_OFF					(1 << 16)
+#define		EVERGREEN_PRIORITY_ALWAYS_ON			(1 << 20)
+
+/* DCE 4 (Evergreen pre-NI) PIPE registers — fixed stride per pipe */
+#define EVERGREEN_PIPE0_ARBITRATION_CONTROL3		0x0bf0
+#define		EVERGREEN_PIPE_LATENCY_WATERMARK_MASK(x)	(((x) & 0x3) << 16)
+#define EVERGREEN_PIPE0_LATENCY_CONTROL				0x0bf4
+#define		EVERGREEN_PIPE_LATENCY_LOW_WATERMARK(x)		(((x) & 0xffff) << 0)
+#define		EVERGREEN_PIPE_LATENCY_HIGH_WATERMARK(x)	(((x) & 0xffff) << 16)
+#define EVERGREEN_PIPE0_DMIF_BUFFER_CONTROL			0x0ca0
+#define		EVERGREEN_DMIF_BUFFERS_ALLOCATED(x)		(((x) & 0xf) << 0)
+#define		EVERGREEN_DMIF_BUFFERS_ALLOCATED_COMPLETED	(1 << 4)
+#define EVERGREEN_PIPE_REGISTER_STRIDE				0x20
+
+/* MC channel-count map. Address shared with R700; mask differs across
+ * generations (Evergreen / NI = 2 bits → max 8 channels;
+ * SI / CIK widen to 4 bits via SI_NOOFCHAN_MASK). */
+#define EVERGREEN_MC_SHARED_CHMAP					0x2004
+#define		EVERGREEN_NOOFCHAN_SHIFT				12
+#define		EVERGREEN_NOOFCHAN_MASK					0x00003000
+
+
 #endif /* __EVERGREEN_REG_H__ */

@@ -83,4 +83,22 @@
 #       define NI_REGAMMA_PROG_B                       4
 #       define NI_OVL_REGAMMA_MODE(x)                  (((x) & 0x7) << 4)
 
+
+/* DCE 5+ DPG pipe arbitration / latency — per-CRTC, uses the standard
+ * EVERGREEN_CRTCn_REGISTER_OFFSET stride. Functionally equivalent to the
+ * DCE 4 PIPE_ARBITRATION_CONTROL3 / PIPE_LATENCY_CONTROL pair, but at
+ * different addresses and a different stride. SI uses identical offsets
+ * (SI_DPG_PIPE_* in si_reg.h); CIK as well. */
+#define NI_DPG_PIPE_ARBITRATION_CONTROL3                0x6cc8
+#       define NI_LATENCY_WATERMARK_MASK(x)             (((x) & 0x3) << 16)
+#define NI_DPG_PIPE_LATENCY_CONTROL                     0x6ccc
+#       define NI_LATENCY_LOW_WATERMARK(x)              (((x) & 0xffff) << 0)
+#       define NI_LATENCY_HIGH_WATERMARK(x)             (((x) & 0xffff) << 16)
+
+/* DMIF buffer allocation poll (DCE 5+, per CRTC stride). On DCE 4 the
+ * equivalent register lives at EVERGREEN_PIPE0_DMIF_BUFFER_CONTROL. */
+#define NI_DPG_PIPE_DMIF_BUFFER_CONTROL                 0x0ca0
+#       define NI_DMIF_BUFFERS_ALLOCATED(x)             (((x) & 0xf) << 0)
+#       define NI_DMIF_BUFFERS_ALLOCATED_COMPLETED      (1 << 4)
+
 #endif

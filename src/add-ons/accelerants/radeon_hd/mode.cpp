@@ -192,6 +192,14 @@ radeon_set_display_mode(display_mode* mode)
 	if (gDisplay[crtcID]->attached == false)
 		return B_ERROR;
 
+	// Re-validate the requested mode. is_mode_supported() filters the
+	// offered mode list, but app_server can also restore a previously-
+	// saved mode that's no longer in the list (e.g. after a driver
+	// update tightens the caps). Reject those here so persisted user
+	// preferences can't bypass the per-chip pixel-clock caps.
+	if (!is_mode_supported(mode))
+		return B_BAD_VALUE;
+
 	// Copy this display mode into the "current mode" for the display
 	memcpy(&gDisplay[crtcID]->currentMode, mode, sizeof(display_mode));
 
@@ -373,6 +381,37 @@ is_mode_supported(display_mode* mode)
 			default:
 				break;
 		}
+	}
+
+	// Per-chip memory-bandwidth caps for linear scanout.
+	//
+	// Haiku writes pixels into the framebuffer through the PCI BAR as a
+	// linear surface and programs the chip with ARRAY_MODE_LINEAR_ALIGNED
+	// (see Phase 3.2 / display_crtc_fb_set). On low-end Northern Islands
+	// silicon with a 64-bit memory bus (Caicos / Caicos XT — HD 6450 /
+	// HD 7470 / HD 8470 / R5 230/235/310 OEM) this works cleanly up to
+	// ~1080p@60Hz but cannot sustain the bandwidth required for higher
+	// pixel clocks. Symptoms above the cap range from minor edge jitter
+	// (4K@30Hz) to severe stride-aliased corruption (4K@60Hz).
+	//
+	// Linux's radeon driver works around this by using tiled scanout
+	// (ARRAY_MODE = 2D_TILED_THIN1), which has dramatically better
+	// memory-access locality. Tiled scanout requires app_server to write
+	// pixels in tile order or use a translation layer — that change lives
+	// outside the radeon_hd driver and is therefore out of scope for this
+	// fork (which is distributed as a standalone .hpkg overlay).
+	//
+	// Cap pixel clock at 165 MHz on Caicos so the offered mode list tops
+	// out at 1080p@60Hz / 1080p@75Hz. Any higher mode is rejected before
+	// it reaches the PLL/encoder programming path. See Phase 4 in the
+	// RadeonHD technical documentation for the full investigation.
+	if (info.chipsetID == RADEON_CAICOS
+		&& mode->timing.pixel_clock > 165000) {
+		TRACE("%s: rejecting %" B_PRIu32 "x%" B_PRIu32 " on Caicos "
+			"(pixel clock %" B_PRIu32 " kHz exceeds 165 MHz linear-"
+			"scanout cap)\n", __func__, mode->virtual_width,
+			mode->virtual_height, mode->timing.pixel_clock);
+		sane = false;
 	}
 
 	// if we have edid info, check frequency adginst crt reported valid ranges

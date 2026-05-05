@@ -939,6 +939,10 @@ display_crtc_fb_set(uint8 crtcID, display_mode* mode)
 	gInfo->shared_info->bytes_per_row = widthAligned * bytesPerPixel;
 	gInfo->shared_info->current_mode = *mode;
 	gInfo->shared_info->bits_per_pixel = bitsPerPixel;
+
+	// Track the per-CRTC active mode for any future per-CRTC code that
+	// needs to know which heads are programmed. Cheap to maintain.
+	gDisplay[crtcID]->currentMode = *mode;
 }
 
 
