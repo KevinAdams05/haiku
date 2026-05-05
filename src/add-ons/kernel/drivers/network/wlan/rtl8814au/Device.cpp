@@ -20,6 +20,7 @@
 #include "Device.h"
 
 #include <new>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1446,7 +1447,12 @@ RTL8814AUDevice::_Get80211(void* userArgs, size_t length)
 	switch (request.i_type) {
 		case IEEE80211_IOC_SCAN_RESULTS:
 		{
+			uint16 reqLen = request.i_len;
 			status_t status = _GetScanResults(request.i_data, request.i_len);
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_SCAN_RESULTS GET: "
+				"reqlen=%u retlen=%u status=%s\n",
+				(unsigned)reqLen, (unsigned)request.i_len,
+				strerror(status));
 			if (status != B_OK)
 				return status;
 
@@ -1595,6 +1601,8 @@ RTL8814AUDevice::_ScanNotifierThreadEntry(void* arg)
 void
 RTL8814AUDevice::_ScanNotifierLoop()
 {
+	dprintf(RTL8814AU_DRIVER_NAME ": scan-notifier: waiting up to 8s "
+		"for firmware C2H scan-complete\n");
 	// Wait for the firmware-issued kC2H_ScanComplete; it's likely never
 	// going to arrive because our firmware-glue for that event is still
 	// stubbed.  After 8 seconds we fall through and fire B_NETWORK_WLAN_SCANNED
@@ -1606,14 +1614,35 @@ RTL8814AUDevice::_ScanNotifierLoop()
 		fWiFiManager->WaitForScanComplete(8LL * 1000 * 1000);
 
 	if (gNotificationModule != NULL && !fRemoved) {
+		// Build the device path matching what wpa_supplicant expects.
+		// driver_haiku_events.cpp's _NotifyNetworkEvent prepends "/dev/"
+		// to whatever string we put in "interface", and driver_bsd's
+		// drv->ifname is "/dev/net/rtl8814au/<slot>" (set from net_server's
+		// BMessage `device` field).  So we need to send "net/rtl8814au/<slot>".
+		// Previously we sent fDeviceName which is the friendly USB product
+		// name ("ASUS USB-AC68"), causing wpa_supplicant to silently drop
+		// the SCAN_RESULTS event after our scan completed and never drive
+		// the WPA2 association.
+		char ifPath[64];
+		snprintf(ifPath, sizeof(ifPath), "%s/%" B_PRIu32,
+			RTL8814AU_DEVICE_PATH_BASE, fSlotIndex);
+
+		dprintf(RTL8814AU_DRIVER_NAME ": scan-notifier: firing "
+			"B_NETWORK_WLAN_SCANNED for %s\n", ifPath);
 		char messageBuffer[512];
 		KMessage message;
 		message.SetTo(messageBuffer, sizeof(messageBuffer),
 			B_NETWORK_MONITOR);
 		message.AddInt32("opcode", B_NETWORK_WLAN_SCANNED);
-		message.AddString("interface", fDeviceName);
+		message.AddString("interface", ifPath);
 
-		gNotificationModule->send_notification(&message);
+		status_t status = gNotificationModule->send_notification(&message);
+		dprintf(RTL8814AU_DRIVER_NAME ": scan-notifier: notification "
+			"sent, status=%s\n", strerror(status));
+	} else {
+		dprintf(RTL8814AU_DRIVER_NAME ": scan-notifier: not firing "
+			"(notification module=%p removed=%d)\n",
+			gNotificationModule, (int)fRemoved);
 	}
 
 	MutexLocker locker(fLock);
