@@ -1964,6 +1964,16 @@ RTL8814AUDevice::Control(void* cookie, uint32 op, void* args, size_t length)
 			return B_OK;
 		}
 
+		case SIOCSIFMEDIA:
+			// wpa_supplicant's bsd_set_mediaopt calls this before each
+			// scan to flip the interface to STA mode (IFM_OMASK -> 0).
+			// On Haiku our wireless driver is always effectively in STA
+			// mode, so the actual media value doesn't matter.  Returning
+			// failure here makes wpa_driver_bsd_scan early-exit and
+			// IOC_SCAN_REQ never fires, which is what blocked WPA2
+			// progress through this commit.  Accept the call.
+			return B_OK;
+
 		case SIOCS80211:
 			// 802.11 set-parameter ioctl from userland.  args is a USER
 			// pointer to a struct ieee80211req — the per-i_type handler
@@ -1977,7 +1987,21 @@ RTL8814AUDevice::Control(void* cookie, uint32 op, void* args, size_t length)
 			return device->_Get80211(args, length);
 
 		default:
+		{
+			// First few unknown ops get logged so we can identify which
+			// SIOC*/ETHER_* codes the kernel forwards but we don't yet
+			// handle.  Currently chasing SIOCGIFMEDIA (8925) and
+			// SIOCSIFMEDIA (8924) which wpa_supplicant's bsd_set_mediaopt
+			// requires before it'll issue IOC_SCAN_REQ.
+			static uint32 sUnknownLogged = 0;
+			if (sUnknownLogged < 32) {
+				sUnknownLogged++;
+				dprintf(RTL8814AU_DRIVER_NAME ": Control unknown op=0x%"
+					B_PRIx32 " (%" B_PRIu32 ") len=%" B_PRIuSIZE "\n",
+					(uint32)op, (uint32)op, length);
+			}
 			return B_DEV_INVALID_IOCTL;
+		}
 	}
 }
 
