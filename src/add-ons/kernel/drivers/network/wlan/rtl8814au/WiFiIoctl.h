@@ -69,13 +69,83 @@ struct ieee80211req {
 #define IEEE80211_IOC_SCAN_REQ			103
 #define IEEE80211_IOC_SCAN_CANCEL		104
 
+#define IEEE80211_IOC_ROAMING			16
+#define IEEE80211_IOC_PRIVACY			17
 #define IEEE80211_IOC_WPAKEY			19
+#define IEEE80211_IOC_DELKEY			20
 #define IEEE80211_IOC_MLME				21
+#define IEEE80211_IOC_COUNTERMEASURES	25
+#define IEEE80211_IOC_WPA				26
+#define IEEE80211_IOC_APPIE				95
+#define IEEE80211_IOC_DEVCAPS			98
+
+
+// IOC_APPIE i_val identifying which mgmt frame this IE attaches to.
+// FreeBSD's IEEE80211_APPIE_WPA = TYPE_MGT(0x00) | SUBTYPE_BEACON(0x80)
+//                               | SUBTYPE_PROBE_RESP(0x50) = 0xD0.
+// Despite the name, wpa_supplicant uses this tag for the RSN IE
+// that must be inserted into our outgoing assoc-req.
+#define IEEE80211_APPIE_WPA				0xD0
+
+
+// Driver-capability bits used in ieee80211_devcaps_req::dc_drivercaps.
+// Mirror of net80211/ieee80211_var.h.  We advertise only the subset
+// wpa_supplicant's bsd backend looks for.
+#define IEEE80211_C_HOSTAP				0x00000400
+#define IEEE80211_C_WPA1				0x00800000
+#define IEEE80211_C_WPA2				0x01000000
+
+
+// Returned via i_data when i_type == IEEE80211_IOC_DEVCAPS.  We answer
+// only the four scalar capability words; userland's bsd backend never
+// inspects dc_chaninfo on Haiku, so we leave it zero-length.
+struct ieee80211_devcaps_req_min {
+	uint32	dc_drivercaps;
+	uint32	dc_cryptocaps;
+	uint32	dc_htcaps;
+	uint32	dc_vhtcaps;
+};
 
 // Haiku-specific extensions (see freebsd_wlan/net80211/ieee80211_ioctl.h).
 #define IEEE80211_IOC_HAIKU_COMPAT_WLAN_UP		0x6000
 #define IEEE80211_IOC_HAIKU_COMPAT_WLAN_DOWN	0x6001
 #define IEEE80211_IOC_HAIKU_JOIN				0x6002
+
+
+// Cipher key install — passed via i_data when i_type == IEEE80211_IOC_WPAKEY.
+// Layout matches freebsd_wlan's ieee80211req_key.
+#ifndef IEEE80211_KEYBUF_SIZE
+#	define IEEE80211_KEYBUF_SIZE	16
+#endif
+#ifndef IEEE80211_MICBUF_SIZE
+#	define IEEE80211_MICBUF_SIZE	8
+#endif
+struct ieee80211req_key {
+	uint8	ik_type;	// cipher type (CCMP, TKIP, ...)
+	uint8	ik_pad;
+	uint16	ik_keyix;	// key index (slot 0..3 group, IEEE80211_KEYIX_NONE for pairwise)
+	uint8	ik_keylen;	// key length in bytes
+	uint8	ik_flags;	// IEEE80211_KEY_XMIT / KEY_RECV / KEY_DEFAULT
+	uint8	ik_macaddr[IEEE80211_ADDR_LEN];
+	uint64	ik_keyrsc;	// key RX sequence counter
+	uint64	ik_keytsc;	// key TX sequence counter
+	uint8	ik_keydata[IEEE80211_KEYBUF_SIZE + IEEE80211_MICBUF_SIZE];
+};
+
+// MLME state-manipulation request — i_data when i_type == IEEE80211_IOC_MLME.
+struct ieee80211req_mlme {
+	uint8	im_op;		// IEEE80211_MLME_*
+#define IEEE80211_MLME_ASSOC		1
+#define IEEE80211_MLME_DISASSOC		2
+#define IEEE80211_MLME_DEAUTH		3
+#define IEEE80211_MLME_AUTHORIZE	4
+#define IEEE80211_MLME_UNAUTHORIZE	5
+#define IEEE80211_MLME_AUTH		6
+	uint8	im_ssid_len;
+	uint16	im_reason;	// 802.11 reason code
+	uint8	im_macaddr[IEEE80211_ADDR_LEN];
+	uint8	im_ssid[IEEE80211_NWID_LEN];
+};
 
 
 // Scan request — passed via i_data when i_type == IEEE80211_IOC_SCAN_REQ.

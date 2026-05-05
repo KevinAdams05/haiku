@@ -162,9 +162,28 @@ private:
 
 	// Pending-join state populated by IEEE80211_IOC_SSID / _BSSID, used by
 	// _MLME when wpa_supplicant orchestrates the actual auth/assoc.
+	// All zero-initialized in the constructor — net_server probes the
+	// ioctl interface before userland sets state, and we must never run
+	// _DoJoin against uninitialized memory.
 	char						fJoinSsid[33];
 	uint32						fJoinSsidLength;
 	uint8						fJoinBssid[6];
+
+	// Per-interface 802.11 parameters that wpa_supplicant queries at
+	// init (driver_bsd's IEEE80211_IOC_ROAMING / _PRIVACY / _WPA GETs)
+	// and toggles later in the WPA2 sequence.  Stored as state today;
+	// the chip programming happens elsewhere (privacy goes hand-in-hand
+	// with the CCMP cipher enable, WPA mode shapes the assoc-req IEs).
+	int32						fRoaming;
+	int32						fPrivacy;
+	int32						fWpaMode;
+
+	// RSN information element supplied by wpa_supplicant via
+	// IEEE80211_IOC_APPIE / IEEE80211_APPIE_WPA.  When the assoc-req
+	// is built for a WPA2 join, these bytes get inserted verbatim
+	// after the SSID + supported-rates IEs.
+	uint8						fWpaIe[256];
+	uint32						fWpaIeLength;
 
 	// Open-network auth+assoc state machine driven by IOC_HAIKU_JOIN.
 	enum JoinState {

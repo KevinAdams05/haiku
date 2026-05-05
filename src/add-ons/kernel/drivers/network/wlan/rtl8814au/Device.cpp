@@ -71,6 +71,14 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	memset(fBulkOut, 0, sizeof(fBulkOut));
 	memset(fMacAddress, 0, sizeof(fMacAddress));
 	memset(fRxRing, 0, sizeof(fRxRing));
+	memset(fJoinSsid, 0, sizeof(fJoinSsid));
+	fJoinSsidLength = 0;
+	memset(fJoinBssid, 0, sizeof(fJoinBssid));
+	fRoaming = 0;
+	fPrivacy = 0;
+	fWpaMode = 0;
+	memset(fWpaIe, 0, sizeof(fWpaIe));
+	fWpaIeLength = 0;
 	fRxRingHead = 0;
 	fRxRingTail = 0;
 	fLinkStateSem = -1;
@@ -1254,19 +1262,121 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 		case IEEE80211_IOC_MLME:
 		{
 			// Auth/Assoc/Deauth/Disassoc command from wpa_supplicant.
-			// Stub for now — log the request and return B_OK so the upper
-			// layers don't error out.  Actual frame TX will be wired up
-			// once we verify wpa_supplicant launches and reaches this point.
-			dprintf(RTL8814AU_DRIVER_NAME ": IOC_MLME stub: i_val=%d i_len=%u\n",
-				(int)request.i_val, (unsigned)request.i_len);
+			// Diagnostic: parse the ieee80211req_mlme out of i_data and
+			// log im_op + im_reason + im_macaddr so we can reverse-
+			// engineer the sequence wpa_supplicant uses.
+			struct ieee80211req_mlme mlme;
+			memset(&mlme, 0, sizeof(mlme));
+			uint32 copyLen = request.i_len < sizeof(mlme)
+				? request.i_len : sizeof(mlme);
+			if (copyLen > 0 && request.i_data != NULL)
+				user_memcpy(&mlme, request.i_data, copyLen);
+			static const char* opNames[] = {
+				"???", "ASSOC", "DISASSOC", "DEAUTH",
+				"AUTHORIZE", "UNAUTHORIZE", "AUTH"
+			};
+			const char* opName = mlme.im_op <= 6
+				? opNames[mlme.im_op] : "???";
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_MLME stub: op=%u(%s) "
+				"reason=%u mac=%02x:%02x:%02x:%02x:%02x:%02x ssid_len=%u\n",
+				mlme.im_op, opName, mlme.im_reason,
+				mlme.im_macaddr[0], mlme.im_macaddr[1], mlme.im_macaddr[2],
+				mlme.im_macaddr[3], mlme.im_macaddr[4], mlme.im_macaddr[5],
+				mlme.im_ssid_len);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_APPIE:
+		{
+			// wpa_supplicant uses this to deposit the RSN IE that must
+			// land in our assoc-req.  i_val tags the target frame type;
+			// IEEE80211_APPIE_WPA means "the IE to use for WPA/RSN
+			// negotiation".  i_len=0 is a clear; otherwise i_data points
+			// at the IE bytes (typically <60 bytes for a RSN IE).
+			if (request.i_val == IEEE80211_APPIE_WPA) {
+				if (request.i_len == 0) {
+					fWpaIeLength = 0;
+					dprintf(RTL8814AU_DRIVER_NAME
+						": IOC_APPIE WPA: cleared\n");
+					return B_OK;
+				}
+				if (request.i_len > sizeof(fWpaIe))
+					return B_BUFFER_OVERFLOW;
+				if (user_memcpy(fWpaIe, request.i_data, request.i_len) != B_OK)
+					return B_BAD_ADDRESS;
+				fWpaIeLength = request.i_len;
+				dprintf(RTL8814AU_DRIVER_NAME ": IOC_APPIE WPA: stored "
+					"%u-byte RSN IE [%02x %02x %02x %02x %02x %02x %02x %02x]\n",
+					(unsigned)request.i_len,
+					fWpaIe[0], fWpaIe[1], fWpaIe[2], fWpaIe[3],
+					fWpaIe[4], fWpaIe[5], fWpaIe[6], fWpaIe[7]);
+				return B_OK;
+			}
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_APPIE i_val=0x%02x i_len=%u (ignored)\n",
+				(unsigned)request.i_val, (unsigned)request.i_len);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_DELKEY:
+		{
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_DELKEY i_val=%d\n",
+				(int)request.i_val);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_COUNTERMEASURES:
+		{
+			dprintf(RTL8814AU_DRIVER_NAME
+				": IOC_COUNTERMEASURES SET %d\n", (int)request.i_val);
 			return B_OK;
 		}
 
 		case IEEE80211_IOC_WPAKEY:
 		{
-			// Encryption key install — also from wpa_supplicant.  Stubbed.
-			dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY stub: len=%u\n",
-				(unsigned)request.i_len);
+			// Encryption key install — diagnostic dump.  Real
+			// implementation will program the chip's security CAM.
+			struct ieee80211req_key key;
+			memset(&key, 0, sizeof(key));
+			uint32 copyLen = request.i_len < sizeof(key)
+				? request.i_len : sizeof(key);
+			if (copyLen > 0 && request.i_data != NULL)
+				user_memcpy(&key, request.i_data, copyLen);
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY stub: type=%u "
+				"keyix=%u flags=0x%02x keylen=%u "
+				"mac=%02x:%02x:%02x:%02x:%02x:%02x rsc=%llu tsc=%llu "
+				"data[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+				key.ik_type, key.ik_keyix, key.ik_flags, key.ik_keylen,
+				key.ik_macaddr[0], key.ik_macaddr[1], key.ik_macaddr[2],
+				key.ik_macaddr[3], key.ik_macaddr[4], key.ik_macaddr[5],
+				(unsigned long long)key.ik_keyrsc,
+				(unsigned long long)key.ik_keytsc,
+				key.ik_keydata[0], key.ik_keydata[1], key.ik_keydata[2],
+				key.ik_keydata[3], key.ik_keydata[4], key.ik_keydata[5],
+				key.ik_keydata[6], key.ik_keydata[7]);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_ROAMING:
+		{
+			fRoaming = request.i_val;
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_ROAMING SET %d\n",
+				(int)request.i_val);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_PRIVACY:
+		{
+			fPrivacy = request.i_val;
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_PRIVACY SET %d\n",
+				(int)request.i_val);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_WPA:
+		{
+			fWpaMode = request.i_val;
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPA SET %d\n",
+				(int)request.i_val);
 			return B_OK;
 		}
 
@@ -1275,6 +1385,16 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 			// Haiku-specific join request from net_server / NetworkSetup.
 			// Drive the full auth+assoc state machine for OPEN networks;
 			// WPA-secured networks need wpa_supplicant + IOC_WPAKEY.
+			//
+			// Net_server probes new wifi devices on bring-up by issuing
+			// HAIKU_JOIN before any IOC_SSID/IOC_BSSID is set.  Reject
+			// joins with an empty SSID rather than letting _DoJoin run
+			// against zeroed state and emit a noisy "no BSS matching" log.
+			if (fJoinSsidLength == 0) {
+				dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN ignored: "
+					"no SSID set yet (net_server pre-config probe)\n");
+				return B_NOT_INITIALIZED;
+			}
 			dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN: target_ssid='%s', "
 				"bssid=%02x:%02x:%02x:%02x:%02x:%02x\n", fJoinSsid,
 				fJoinBssid[0], fJoinBssid[1], fJoinBssid[2],
@@ -1283,10 +1403,28 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 		}
 
 		default:
-			dprintf(RTL8814AU_DRIVER_NAME
-				": SIOCS80211 unsupported i_type=%u\n",
-				(unsigned)request.i_type);
+		{
+			// Hex-dump the first 32 bytes of i_data so we can
+			// see exactly what wpa_supplicant is sending and
+			// implement these ioctls one by one.
+			uint8 buf[32];
+			memset(buf, 0, sizeof(buf));
+			uint32 copyLen = request.i_len < sizeof(buf)
+				? request.i_len : sizeof(buf);
+			if (copyLen > 0 && request.i_data != NULL)
+				user_memcpy(buf, request.i_data, copyLen);
+			dprintf(RTL8814AU_DRIVER_NAME ": SIOCS80211 unsupported "
+				"i_type=%u i_val=%d i_len=%u "
+				"data[0..15]=%02x%02x%02x%02x%02x%02x%02x%02x"
+				"%02x%02x%02x%02x%02x%02x%02x%02x\n",
+				(unsigned)request.i_type, (int)request.i_val,
+				(unsigned)request.i_len,
+				buf[0], buf[1], buf[2], buf[3],
+				buf[4], buf[5], buf[6], buf[7],
+				buf[8], buf[9], buf[10], buf[11],
+				buf[12], buf[13], buf[14], buf[15]);
 			return B_DEV_INVALID_IOCTL;
+		}
 	}
 }
 
@@ -1338,14 +1476,49 @@ RTL8814AUDevice::_Get80211(void* userArgs, size_t length)
 			return user_memcpy(userArgs, &request, sizeof(request));
 		}
 
-		case 16:	// IEEE80211_IOC_DRIVER_CAPS — userland sniffs driver caps
-			request.i_val = 0;
+		case IEEE80211_IOC_ROAMING:
+			// wpa_supplicant's bsd backend GETs this at init via
+			// get80211param (which expects -1 on failure).  Returning
+			// the current setting here is what unblocks init — the
+			// previous "case 16: return 0" path was already correct
+			// by accident, but now it's backed by fRoaming so the
+			// later SET round-trips cleanly.
+			request.i_val = fRoaming;
 			return user_memcpy(userArgs, &request, sizeof(request));
+
+		case IEEE80211_IOC_PRIVACY:
+			request.i_val = fPrivacy;
+			return user_memcpy(userArgs, &request, sizeof(request));
+
+		case IEEE80211_IOC_WPA:
+			request.i_val = fWpaMode;
+			return user_memcpy(userArgs, &request, sizeof(request));
+
+		case IEEE80211_IOC_DEVCAPS:
+		{
+			// wpa_supplicant calls wpa_driver_bsd_capa() at init,
+			// which GETs DEVCAPS to discover what security modes the
+			// driver supports.  Only dc_drivercaps is actually inspected
+			// on Haiku (the cipher caps are unconditionally enabled
+			// on the Haiku build path).  Advertise WPA1+WPA2 so
+			// wpa_supplicant publishes those key_mgmt capabilities.
+			struct ieee80211_devcaps_req_min caps;
+			memset(&caps, 0, sizeof(caps));
+			caps.dc_drivercaps = IEEE80211_C_WPA1 | IEEE80211_C_WPA2;
+
+			if (request.i_len < sizeof(caps) || request.i_data == NULL)
+				return B_BUFFER_OVERFLOW;
+			if (user_memcpy(request.i_data, &caps, sizeof(caps)) != B_OK)
+				return B_BAD_ADDRESS;
+			request.i_len = sizeof(caps);
+			return user_memcpy(userArgs, &request, sizeof(request));
+		}
 
 		default:
 			dprintf(RTL8814AU_DRIVER_NAME
-				": SIOCG80211 unsupported i_type=%u\n",
-				(unsigned)request.i_type);
+				": SIOCG80211 unsupported i_type=%u i_val=%d i_len=%u\n",
+				(unsigned)request.i_type, (int)request.i_val,
+				(unsigned)request.i_len);
 			return B_DEV_INVALID_IOCTL;
 	}
 }
@@ -1422,11 +1595,17 @@ RTL8814AUDevice::_ScanNotifierThreadEntry(void* arg)
 void
 RTL8814AUDevice::_ScanNotifierLoop()
 {
-	status_t status = B_TIMED_OUT;
+	// Wait for the firmware-issued kC2H_ScanComplete; it's likely never
+	// going to arrive because our firmware-glue for that event is still
+	// stubbed.  After 8 seconds we fall through and fire B_NETWORK_WLAN_SCANNED
+	// regardless — by then `_ParseBeaconOrProbe` has populated fBssList
+	// from passively-received beacons, which is what userland consumes.
+	// Without this, wpa_supplicant blocks forever waiting for the scan
+	// notification before driving WPA2 association.
 	if (fWiFiManager != NULL && !fRemoved)
-		status = fWiFiManager->WaitForScanComplete(30LL * 1000 * 1000);
+		fWiFiManager->WaitForScanComplete(8LL * 1000 * 1000);
 
-	if (status == B_OK && gNotificationModule != NULL && !fRemoved) {
+	if (gNotificationModule != NULL && !fRemoved) {
 		char messageBuffer[512];
 		KMessage message;
 		message.SetTo(messageBuffer, sizeof(messageBuffer),
