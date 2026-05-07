@@ -35,6 +35,7 @@
 
 #include "Driver.h"
 #include "WiFiIoctl.h"
+#include "WPA2Crypto.h"
 
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,11 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fEapolState = kEapolIdle;
 	memset(fAnonce, 0, sizeof(fAnonce));
 	memset(fSnonce, 0, sizeof(fSnonce));
+	memset(fPmk, 0, sizeof(fPmk));
+	fPmkValid = false;
+	memset(fPtk, 0, sizeof(fPtk));
+	fPtkValid = false;
+	fM1ReplayCounter = 0;
 	fLinkStateSem = -1;
 	fPostAssocSem = -1;
 	fPostAssocThread = -1;
@@ -1477,21 +1483,64 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 
 		case IEEE80211_IOC_HAIKU_JOIN:
 		{
-			// Haiku-specific join request from net_server / NetworkSetup.
-			// Drive the full auth+assoc state machine for OPEN networks;
-			// WPA-secured networks need wpa_supplicant + IOC_WPAKEY.
+			// Two callers:
 			//
-			// Net_server probes new wifi devices on bring-up by issuing
-			// HAIKU_JOIN before any IOC_SSID/IOC_BSSID is set.  Reject
-			// joins with an empty SSID rather than letting _DoJoin run
-			// against zeroed state and emit a noisy "no BSS matching" log.
+			//   * Legacy / net_server / open-network: i_len == 0.  Drive
+			//     _DoJoin against state previously established by IOC_SSID
+			//     + IOC_BSSID.  Reject if SSID hasn't been set (net_server
+			//     probes the ioctl interface on bring-up before userland
+			//     has set anything; we'd otherwise run _DoJoin against
+			//     zeroed state and emit a noisy "no BSS matching" log).
+			//
+			//   * wpa2_join userland tool: i_len == sizeof(rtl_haiku_join_psk).
+			//     Carry the SSID + passphrase + (optional) BSSID; we
+			//     run PBKDF2-HMAC-SHA1 to derive the PMK, then drive the
+			//     full WPA2 path with the in-driver 4-way handshake.
+			if (request.i_len == sizeof(struct rtl_haiku_join_psk)
+				&& request.i_data != NULL) {
+				struct rtl_haiku_join_psk req;
+				if (user_memcpy(&req, request.i_data, sizeof(req)) != B_OK)
+					return B_BAD_ADDRESS;
+				if (req.jp_ssid_len == 0 || req.jp_ssid_len > 32
+					|| req.jp_passphrase_len == 0
+					|| req.jp_passphrase_len > 63) {
+					return B_BAD_VALUE;
+				}
+
+				// Derive PMK = PBKDF2(passphrase, SSID, 4096 iters, 32 bytes).
+				wpa2_crypto::pbkdf2_hmac_sha1(req.jp_passphrase,
+					req.jp_passphrase_len, req.jp_ssid, req.jp_ssid_len,
+					4096, fPmk, 32);
+				fPmkValid = true;
+				fPtkValid = false;
+				fEapolState = kEapolWaitM1;
+
+				// Capture SSID / BSSID so _DoJoin's normal lookup path
+				// works.  BSSID may be all-zero — _DoJoin will resolve
+				// it from the scan list by SSID.
+				memcpy(fJoinSsid, req.jp_ssid, req.jp_ssid_len);
+				fJoinSsid[req.jp_ssid_len] = 0;
+				fJoinSsidLength = req.jp_ssid_len;
+				memcpy(fJoinBssid, req.jp_bssid, 6);
+
+				dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN (WPA2-PSK): "
+					"ssid='%s' bssid=%02x:%02x:%02x:%02x:%02x:%02x "
+					"PMK[0..3]=%02x%02x%02x%02x\n",
+					fJoinSsid,
+					fJoinBssid[0], fJoinBssid[1], fJoinBssid[2],
+					fJoinBssid[3], fJoinBssid[4], fJoinBssid[5],
+					fPmk[0], fPmk[1], fPmk[2], fPmk[3]);
+				return _DoJoin(fJoinBssid, fJoinSsid, fJoinSsidLength);
+			}
+
 			if (fJoinSsidLength == 0) {
 				dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN ignored: "
 					"no SSID set yet (net_server pre-config probe)\n");
 				return B_NOT_INITIALIZED;
 			}
-			dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN: target_ssid='%s', "
-				"bssid=%02x:%02x:%02x:%02x:%02x:%02x\n", fJoinSsid,
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN (open): "
+				"target_ssid='%s', bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
+				fJoinSsid,
 				fJoinBssid[0], fJoinBssid[1], fJoinBssid[2],
 				fJoinBssid[3], fJoinBssid[4], fJoinBssid[5]);
 			return _DoJoin(fJoinBssid, fJoinSsid, fJoinSsidLength);
@@ -3090,16 +3139,152 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 	(void)keyMic;
 	(void)nonce;
 
-	// State transitions.  Real M2/M3/M4 generation arrives in a
-	// follow-up commit once the IOC_HAIKU_JOIN PMK is plumbed in.
+	// M1 -> M2: capture ANonce, derive PTK, build M2 with HMAC-SHA1 MIC.
 	if (pairwise && keyAck && !keyMicSet && !install) {
-		// M1 — capture the ANonce.
 		memcpy(fAnonce, nonce, 32);
+
+		// Echo back the M1 replay counter in M2.  Stored big-endian
+		// directly in body[5..12]; we keep it in host order for clarity
+		// and re-encode when building M2.
+		fM1ReplayCounter = 0;
+		for (uint32 i = 0; i < 8; i++)
+			fM1ReplayCounter = (fM1ReplayCounter << 8) | body[5 + i];
+
+		if (!fPmkValid) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M1 received but no PMK — "
+				"call IOC_HAIKU_JOIN with rtl_haiku_join_psk first\n");
+			return;
+		}
+
+		// SNonce — kernel-side random.  Mix system_time, real-time
+		// clock, our MAC, and a counter through SHA-1 twice.  Not a
+		// CSPRNG but adequate freshness: the AP only needs SNonce
+		// to be unique per handshake, not unpredictable.
+		_GenerateSnonce(fSnonce);
+
+		// PTK = PRF-384(PMK, "Pairwise key expansion",
+		//               min(AA,SPA) || max(AA,SPA)
+		//            || min(ANonce,SNonce) || max(ANonce,SNonce))
+		uint8 ptkData[76];
+		const uint8* aa = senderMac;	// AP's MAC
+		const uint8* spa = fMacAddress;	// our MAC
+		bool aaIsMin = memcmp(aa, spa, 6) < 0;
+		memcpy(ptkData, aaIsMin ? aa : spa, 6);
+		memcpy(ptkData + 6, aaIsMin ? spa : aa, 6);
+		bool aNonceIsMin = memcmp(fAnonce, fSnonce, 32) < 0;
+		memcpy(ptkData + 12, aNonceIsMin ? fAnonce : fSnonce, 32);
+		memcpy(ptkData + 44, aNonceIsMin ? fSnonce : fAnonce, 32);
+		wpa2_crypto::prf_384(fPmk, 32,
+			"Pairwise key expansion", 22,
+			ptkData, 76, fPtk);
+		fPtkValid = true;
+
+		dprintf(RTL8814AU_DRIVER_NAME ": M1 processed: "
+			"SNonce[0..3]=%02x%02x%02x%02x ANonce[0..3]=%02x%02x%02x%02x "
+			"KCK[0..3]=%02x%02x%02x%02x KEK[0..3]=%02x%02x%02x%02x "
+			"TK[0..3]=%02x%02x%02x%02x\n",
+			fSnonce[0], fSnonce[1], fSnonce[2], fSnonce[3],
+			fAnonce[0], fAnonce[1], fAnonce[2], fAnonce[3],
+			fPtk[0], fPtk[1], fPtk[2], fPtk[3],
+			fPtk[16], fPtk[17], fPtk[18], fPtk[19],
+			fPtk[32], fPtk[33], fPtk[34], fPtk[35]);
+
+		// Build EAPOL-Key M2 frame in a stack buffer.  EAPOL header
+		// (4 bytes) + EAPOL-Key fixed (95 bytes) + RSN IE (key_data_len)
+		// = 99 + fWpaIeLength.
+		uint8 m2[256];
+		uint32 keyDataLength = fWpaIeLength;
+		if (keyDataLength == 0 || keyDataLength > 80) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M1 processed but no RSN "
+				"IE stored — skipping M2 build\n");
+			return;
+		}
+		uint32 m2Len = 99 + keyDataLength;
+		memset(m2, 0, m2Len);
+
+		// EAPOL header
+		m2[0] = 0x02;	// version 2
+		m2[1] = 0x03;	// type Key
+		uint32 bodyLen2 = m2Len - 4;
+		m2[2] = (uint8)(bodyLen2 >> 8);
+		m2[3] = (uint8)bodyLen2;
+
+		// EAPOL-Key body
+		m2[4] = 0x02;	// descriptor type RSN
+		// Key Info: descVer=2 (HMAC-SHA1, AES key wrap),
+		//           pair=1 (bit 3), MIC=1 (bit 8)
+		uint16 m2KeyInfo = 0x010A;
+		m2[5] = (uint8)(m2KeyInfo >> 8);
+		m2[6] = (uint8)m2KeyInfo;
+		// Key Length = 0 in M2 (per IEEE 802.11i, M2 leaves key length
+		// at zero; AP sets the negotiated value in M3).
+		m2[7] = 0; m2[8] = 0;
+		// Replay counter — echo M1's value verbatim.
+		for (uint32 i = 0; i < 8; i++)
+			m2[9 + i] = (uint8)(fM1ReplayCounter >> (56 - i * 8));
+		// Key Nonce = our SNonce
+		memcpy(m2 + 17, fSnonce, 32);
+		// IV (16), RSC (8), Reserved (8) — already zero from memset.
+		// Key MIC (16) — computed below; leave as zeros for now.
+		// Key Data Length (big-endian)
+		m2[97] = (uint8)(keyDataLength >> 8);
+		m2[98] = (uint8)keyDataLength;
+		// Key Data — our RSN IE verbatim
+		memcpy(m2 + 99, fWpaIe, fWpaIeLength);
+
+		// Compute MIC = HMAC-SHA1(KCK, entire M2 with MIC field zero)[0..15]
+		uint8 mic[20];
+		const uint8* kck = fPtk;	// PTK[0..15]
+		wpa2_crypto::hmac_sha1(kck, 16, m2, m2Len, mic);
+		memcpy(m2 + 81, mic, 16);
+
+		dprintf(RTL8814AU_DRIVER_NAME ": built M2 (%u bytes) "
+			"MIC[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+			(unsigned)m2Len,
+			m2[81], m2[82], m2[83], m2[84],
+			m2[85], m2[86], m2[87], m2[88]);
+
+		// TODO next session: TX m2 via fTxPath as a data frame
+		// wrapped in 802.11 header (ToDS=1, Addr1=BSSID,
+		// Addr2=our MAC, Addr3=AP-MAC) + LLC/SNAP with ethertype 0x888E.
+		// For now we stop here — we want to verify PTK derivation
+		// and MIC computation match what the AP expects before we
+		// commit to the on-air TX path.
+
 		fEapolState = kEapolWaitM3;
 		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> WaitM3 "
-			"(captured ANonce[0..3]=%02x%02x%02x%02x)\n",
-			fAnonce[0], fAnonce[1], fAnonce[2], fAnonce[3]);
+			"(M2 ready in driver, TX deferred)\n");
 	}
+}
+
+
+// SNonce generator — not a CSPRNG.  Mixes system_time, real-time
+// clock, our MAC, and a per-call counter through two SHA-1 rounds
+// to fill 32 bytes.  Adequate freshness: the AP only needs SNonce
+// to be unique per handshake, not strongly unpredictable.
+void
+RTL8814AUDevice::_GenerateSnonce(uint8 nonce[32])
+{
+	static uint32 sCounter = 0;
+	sCounter++;
+
+	uint8 mix[64];
+	memset(mix, 0, sizeof(mix));
+	bigtime_t t1 = system_time();
+	bigtime_t t2 = real_time_clock_usecs();
+	memcpy(mix +  0, &t1, sizeof(t1));
+	memcpy(mix +  8, &t2, sizeof(t2));
+	memcpy(mix + 16, fMacAddress, 6);
+	memcpy(mix + 22, &sCounter, 4);
+	memset(mix + 26, 0x5a, 38);
+
+	uint8 hash1[20];
+	wpa2_crypto::sha1(mix, 64, hash1);
+	mix[0] ^= 0xFF;
+	uint8 hash2[20];
+	wpa2_crypto::sha1(mix, 64, hash2);
+	memcpy(nonce + 0, hash1, 20);
+	memcpy(nonce + 20, hash2, 12);
 }
 
 

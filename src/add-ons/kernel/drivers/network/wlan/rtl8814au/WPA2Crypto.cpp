@@ -203,6 +203,48 @@ prf_384(const uint8* key, uint32 keyLen,
 
 
 // ---------------------------------------------------------------------------
+// PBKDF2-HMAC-SHA1 (RFC 2898 §5.2)
+// ---------------------------------------------------------------------------
+
+void
+pbkdf2_hmac_sha1(const uint8* password, uint32 passwordLen,
+	const uint8* salt, uint32 saltLen, uint32 iterations,
+	uint8* output, uint32 outputLen)
+{
+	// Each block produces 20 bytes (SHA-1 length).
+	uint32 blockCount = (outputLen + 19) / 20;
+	uint8 saltAndIndex[256];
+	if (saltLen + 4 > sizeof(saltAndIndex)) {
+		memset(output, 0, outputLen);
+		return;
+	}
+	memcpy(saltAndIndex, salt, saltLen);
+
+	for (uint32 block = 1; block <= blockCount; block++) {
+		// Append big-endian block index.
+		saltAndIndex[saltLen]     = (uint8)(block >> 24);
+		saltAndIndex[saltLen + 1] = (uint8)(block >> 16);
+		saltAndIndex[saltLen + 2] = (uint8)(block >> 8);
+		saltAndIndex[saltLen + 3] = (uint8)block;
+
+		uint8 U[20];
+		uint8 T[20];
+		hmac_sha1(password, passwordLen, saltAndIndex, saltLen + 4, U);
+		memcpy(T, U, 20);
+
+		for (uint32 iter = 1; iter < iterations; iter++) {
+			hmac_sha1(password, passwordLen, U, 20, U);
+			for (uint32 i = 0; i < 20; i++)
+				T[i] ^= U[i];
+		}
+
+		uint32 copyLen = (block * 20 <= outputLen) ? 20 : (outputLen - (block - 1) * 20);
+		memcpy(output + (block - 1) * 20, T, copyLen);
+	}
+}
+
+
+// ---------------------------------------------------------------------------
 // AES-128 (FIPS 197).  Compact reference using S-box + inverse S-box.
 // ---------------------------------------------------------------------------
 

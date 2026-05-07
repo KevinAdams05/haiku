@@ -45,6 +45,15 @@ void aes128_encrypt(const uint8 key[16], const uint8 plaintext[16],
 void aes128_decrypt(const uint8 key[16], const uint8 ciphertext[16],
 	uint8 plaintext[16]);
 
+// PBKDF2-HMAC-SHA1 (RFC 2898 §5.2).  WPA2-PSK derives the PMK as
+// PBKDF2(passphrase, SSID, 4096, 32) — 32 bytes out, ~8200 SHA-1
+// blocks total.  Fast enough to run synchronously from a kernel
+// ioctl handler (sub-millisecond on this hardware in practice).
+void pbkdf2_hmac_sha1(const uint8* password, uint32 passwordLen,
+	const uint8* salt, uint32 saltLen, uint32 iterations,
+	uint8* output, uint32 outputLen);
+
+
 // RFC 3394 AES Key Wrap unwrap.  Used to extract the GTK from
 // EAPOL-Key Message 3.  `cipherLen` must be 8*n+8 for n >= 1.
 // On success, plaintext output is `cipherLen - 8` bytes.

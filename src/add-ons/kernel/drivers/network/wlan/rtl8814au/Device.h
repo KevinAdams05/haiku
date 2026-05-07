@@ -250,11 +250,17 @@ private:
 	EapolState					fEapolState;
 	uint8						fAnonce[32];	// from M1
 	uint8						fSnonce[32];	// our random, computed before M2
+	uint8						fPmk[32];		// pairwise master key (from PBKDF2)
+	bool						fPmkValid;
+	uint8						fPtk[48];		// KCK[0..15] || KEK[16..31] || TK[32..47]
+	bool						fPtkValid;
+	uint64						fM1ReplayCounter;	// echoed back in M2
 
 	static int32				_Eapol4WayThreadEntry(void* arg);
 	void						_Eapol4WayLoop();
 	void						_HandleEapolFrame(const uint8* payload,
 									uint32 length, const uint8 senderMac[6]);
+	void						_GenerateSnonce(uint8 nonce[32]);
 
 	// Link state change notification
 	sem_id						fLinkStateSem;	// Provided by network stack

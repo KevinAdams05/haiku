@@ -114,6 +114,31 @@ struct ieee80211_devcaps_req_min {
 #define IEEE80211_IOC_HAIKU_JOIN				0x6002
 
 
+// Rich payload for IOC_HAIKU_JOIN when invoking from our wpa2_join
+// userland tool (rtl8814au-specific extension).  When userland passes
+// a request whose i_len matches sizeof(rtl_haiku_join_psk), the driver
+// runs PBKDF2 on the supplied passphrase + SSID to derive the PMK and
+// drives the full WPA2 4-way handshake in-kernel.  When i_len matches
+// the legacy zero-byte form, the existing open-network _DoJoin path
+// runs (using fJoinSsid set via IOC_SSID).
+//
+// Why an rtl-specific name: the FreeBSD/Haiku struct named
+// `ieee80211_haiku_join_req` includes a flexible `i_key[]` array
+// holding either a 32-byte PMK (when wpa_supplicant runs PBKDF2) or
+// a passphrase.  We don't need that variant since we can either get
+// the PMK or do PBKDF2 ourselves; the simpler shape below is easier
+// to drive from our standalone tool.
+struct rtl_haiku_join_psk {
+	uint8	jp_bssid[6];				// target BSSID (or zeros = lookup by SSID)
+	uint8	jp_ssid_len;				// length of SSID (1..32)
+	uint8	jp_pad;
+	uint8	jp_ssid[32];				// SSID bytes
+	uint8	jp_passphrase_len;			// length of passphrase (8..63)
+	uint8	jp_pad2[3];
+	uint8	jp_passphrase[64];			// ASCII passphrase
+};
+
+
 // Cipher key install — passed via i_data when i_type == IEEE80211_IOC_WPAKEY.
 // Layout matches freebsd_wlan's ieee80211req_key.
 #ifndef IEEE80211_KEYBUF_SIZE
