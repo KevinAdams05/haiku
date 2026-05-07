@@ -1,5 +1,5 @@
 /*
- * Copyright 2026, Haiku, Inc. All rights reserved.
+ * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All rights reserved.
  * Distributed under the terms of the MIT License.
  *
  * Device.h — RTL8814AUDevice class declaration.

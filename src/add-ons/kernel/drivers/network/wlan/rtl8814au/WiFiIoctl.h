@@ -1,5 +1,5 @@
 /*
- * Copyright 2026, Haiku, Inc. All rights reserved.
+ * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All rights reserved.
  * Distributed under the terms of the MIT License.
  *
  * WiFiIoctl.h — Minimal ABI for the IEEE 802.11 ioctls that userland uses

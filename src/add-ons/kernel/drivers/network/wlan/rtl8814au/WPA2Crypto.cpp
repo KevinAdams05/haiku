@@ -1,4 +1,7 @@
 /*
+ * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ *
  * WPA2Crypto.cpp — kernel-side crypto primitives for in-driver WPA2.
  *
  * SHA-1 and HMAC-SHA1: RFC 3174 / RFC 2104 reference implementations.
