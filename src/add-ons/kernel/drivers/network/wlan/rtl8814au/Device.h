@@ -221,6 +221,21 @@ private:
 	uint32						fRxRingTail;	// Next slot to read
 	sem_id						fRxDataReady;	// Signaled when frame available
 
+	// EAPOL inbox — diverted from the data ring in _RxFrameReceived
+	// when an incoming frame's ethertype is 0x888E.  Single-slot:
+	// the 4-way handshake is strictly one-message-at-a-time per peer
+	// and we have only one BSS to talk to.  fEapolReady fires when
+	// the inbox transitions empty -> filled; the in-driver WPA2 state
+	// machine acquires it and drains the slot under fLock.
+	struct EapolFrame {
+		uint8	senderMac[6];	// 802.11 Addr3 (real source = AP's MAC)
+		uint32	length;			// payload length (EAPOL body, no ether hdr)
+		uint8	payload[300];	// EAPOL bytes starting at version
+	};
+	EapolFrame					fEapolInbox;
+	bool						fEapolPending;
+	sem_id						fEapolReady;
+
 	// Link state change notification
 	sem_id						fLinkStateSem;	// Provided by network stack
 

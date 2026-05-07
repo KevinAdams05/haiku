@@ -84,6 +84,9 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fWpaIeLength = 0;
 	fRxRingHead = 0;
 	fRxRingTail = 0;
+	memset(&fEapolInbox, 0, sizeof(fEapolInbox));
+	fEapolPending = false;
+	fEapolReady = -1;
 	fLinkStateSem = -1;
 	fPostAssocSem = -1;
 	fPostAssocThread = -1;
@@ -95,6 +98,12 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fRxDataReady = create_sem(0, "rtl8814au:rx_ready");
 	if (fRxDataReady < 0) {
 		fInitStatus = fRxDataReady;
+		return;
+	}
+
+	fEapolReady = create_sem(0, "rtl8814au:eapol_ready");
+	if (fEapolReady < 0) {
+		fInitStatus = fEapolReady;
 		return;
 	}
 
@@ -185,6 +194,8 @@ RTL8814AUDevice::~RTL8814AUDevice()
 
 	if (fRxDataReady >= 0)
 		delete_sem(fRxDataReady);
+	if (fEapolReady >= 0)
+		delete_sem(fEapolReady);
 	if (fPostAssocSem >= 0)
 		delete_sem(fPostAssocSem);
 
@@ -2350,6 +2361,67 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 
 	uint32 payloadLen = frameLength - k80211HeaderLen - kLLCSnapLen;
 	uint32 ethLen = 14 + payloadLen;
+
+	// EAPOL frame (ethertype 0x888E) — divert to the in-driver WPA2
+	// state machine instead of pushing into the data ring.  Haiku's
+	// network stack does not deliver non-IP / non-ARP ethertypes to
+	// AF_LINK packet sockets, so wpa_supplicant cannot see EAPOL via
+	// the normal path.  We run the 4-way handshake in-kernel using the
+	// PMK supplied via IOC_HAIKU_JOIN's rich struct, then program the
+	// derived PTK + GTK directly into the chip's security CAM.
+	if (llc[6] == 0x88 && llc[7] == 0x8E) {
+		MutexLocker locker(device->fLock);
+
+		uint8 fcByte0 = frameData[0];
+		uint8 protectedBit = (frameData[1] >> 6) & 0x01;
+
+		if (payloadLen > sizeof(device->fEapolInbox.payload)) {
+			dprintf(RTL8814AU_DRIVER_NAME ": RX EAPOL too large for "
+				"inbox: %u bytes (max %u) — dropping\n",
+				(unsigned)payloadLen,
+				(unsigned)sizeof(device->fEapolInbox.payload));
+			return;
+		}
+
+		// Source MAC is Addr3 of the 802.11 header (the AP's BSSID
+		// for an AP-to-STA EAPOL frame in FromDS=1).
+		memcpy(device->fEapolInbox.senderMac, &frameData[16], 6);
+		memcpy(device->fEapolInbox.payload,
+			&frameData[k80211HeaderLen + kLLCSnapLen], payloadLen);
+		device->fEapolInbox.length = payloadLen;
+		device->fEapolPending = true;
+
+		dprintf(RTL8814AU_DRIVER_NAME ": RX EAPOL diverted to inbox: "
+			"%u bytes from %02x:%02x:%02x:%02x:%02x:%02x "
+			"protected=%u FC=0x%02x payload[0..7]="
+			"%02x%02x%02x%02x%02x%02x%02x%02x\n",
+			(unsigned)payloadLen,
+			device->fEapolInbox.senderMac[0],
+			device->fEapolInbox.senderMac[1],
+			device->fEapolInbox.senderMac[2],
+			device->fEapolInbox.senderMac[3],
+			device->fEapolInbox.senderMac[4],
+			device->fEapolInbox.senderMac[5],
+			protectedBit, fcByte0,
+			payloadLen > 0 ? device->fEapolInbox.payload[0] : 0,
+			payloadLen > 1 ? device->fEapolInbox.payload[1] : 0,
+			payloadLen > 2 ? device->fEapolInbox.payload[2] : 0,
+			payloadLen > 3 ? device->fEapolInbox.payload[3] : 0,
+			payloadLen > 4 ? device->fEapolInbox.payload[4] : 0,
+			payloadLen > 5 ? device->fEapolInbox.payload[5] : 0,
+			payloadLen > 6 ? device->fEapolInbox.payload[6] : 0,
+			payloadLen > 7 ? device->fEapolInbox.payload[7] : 0);
+
+		locker.Unlock();
+
+		// Wake any thread blocked on the EAPOL state machine.  The
+		// state machine itself is added in a follow-up commit; for now
+		// the sem release is just a future hook and harmless if nothing
+		// is waiting.
+		release_sem_etc(device->fEapolReady, 1, B_DO_NOT_RESCHEDULE);
+		return;
+	}
+
 	if (ethLen > kRxRingFrameMaxSize) {
 		dprintf(RTL8814AU_DRIVER_NAME ": RX frame too large for ring: "
 			"%" B_PRIu32 " bytes\n", ethLen);
@@ -2379,26 +2451,6 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	memcpy(&entry->data[14], &frameData[k80211HeaderLen + kLLCSnapLen],
 		payloadLen);
 	entry->length = ethLen;
-
-	// EAPOL frame (ethertype 0x888E) — log so we can see the
-	// 4-way handshake unfold.  Includes the EAPOL-Key descriptor type
-	// at byte 14 (the first byte of the EAPOL payload).
-	if (llc[6] == 0x88 && llc[7] == 0x8E) {
-		uint8 fcByte0 = frameData[0];
-		uint8 protectedBit = (frameData[1] >> 6) & 0x01;
-		dprintf(RTL8814AU_DRIVER_NAME ": RX EAPOL %u bytes "
-			"protected=%u FC=0x%02x payload[0..7]=%02x%02x%02x%02x"
-			"%02x%02x%02x%02x\n",
-			(unsigned)payloadLen, protectedBit, fcByte0,
-			payloadLen > 0 ? entry->data[14] : 0,
-			payloadLen > 1 ? entry->data[15] : 0,
-			payloadLen > 2 ? entry->data[16] : 0,
-			payloadLen > 3 ? entry->data[17] : 0,
-			payloadLen > 4 ? entry->data[18] : 0,
-			payloadLen > 5 ? entry->data[19] : 0,
-			payloadLen > 6 ? entry->data[20] : 0,
-			payloadLen > 7 ? entry->data[21] : 0);
-	}
 
 	device->fRxRingHead = nextHead;
 	locker.Unlock();
