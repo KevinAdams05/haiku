@@ -13,6 +13,7 @@ KernelAddon rtl8814au :
 	TxPath.cpp
 	RxPath.cpp
 	WiFiManagement.cpp
+	WPA2Crypto.cpp
 	;
 
 # Firmware binary for the RTL8814AU's Lexra 3081 MIPS MCU.

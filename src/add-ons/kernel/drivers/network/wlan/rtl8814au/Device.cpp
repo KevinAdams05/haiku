@@ -87,6 +87,11 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	memset(&fEapolInbox, 0, sizeof(fEapolInbox));
 	fEapolPending = false;
 	fEapolReady = -1;
+	fEapolThread = -1;
+	fEapolStop = false;
+	fEapolState = kEapolIdle;
+	memset(fAnonce, 0, sizeof(fAnonce));
+	memset(fSnonce, 0, sizeof(fSnonce));
 	fLinkStateSem = -1;
 	fPostAssocSem = -1;
 	fPostAssocThread = -1;
@@ -558,6 +563,21 @@ RTL8814AUDevice::_InitHardware()
 	} else {
 		dprintf(RTL8814AU_DRIVER_NAME ": failed to create post-assoc "
 			"sem: %s\n", strerror(fPostAssocSem));
+	}
+
+	// Spawn the in-driver 4-way handshake worker.  Blocks on fEapolReady
+	// (released from _RxFrameReceived when an EAPOL frame arrives), drains
+	// fEapolInbox under fLock, then advances the state machine.
+	fEapolStop = false;
+	fEapolState = kEapolIdle;
+	fEapolThread = spawn_kernel_thread(_Eapol4WayThreadEntry,
+		"rtl8814au:eapol_4way", B_NORMAL_PRIORITY, this);
+	if (fEapolThread >= 0)
+		resume_thread(fEapolThread);
+	else {
+		dprintf(RTL8814AU_DRIVER_NAME ": failed to spawn eapol worker: "
+			"%s\n", strerror(fEapolThread));
+		fEapolThread = -1;
 	}
 
 	// TX path verification: send a single broadcast probe-request frame.
@@ -1174,6 +1194,17 @@ RTL8814AUDevice::_Shutdown()
 	if (postAssoc >= 0) {
 		status_t threadResult;
 		wait_for_thread(postAssoc, &threadResult);
+	}
+
+	// Reap the EAPOL 4-way worker.  Same pattern as post-assoc.
+	thread_id eapol = fEapolThread;
+	fEapolThread = -1;
+	fEapolStop = true;
+	if (fEapolReady >= 0)
+		release_sem_etc(fEapolReady, 1, B_DO_NOT_RESCHEDULE);
+	if (eapol >= 0) {
+		status_t threadResult;
+		wait_for_thread(eapol, &threadResult);
 	}
 
 	// Stop the WiFi management module (interrupt IN)
@@ -2914,6 +2945,161 @@ RTL8814AUDevice::_PostAssocThreadEntry(void* arg)
 	RTL8814AUDevice* device = static_cast<RTL8814AUDevice*>(arg);
 	device->_PostAssocLoop();
 	return 0;
+}
+
+
+// ---------------------------------------------------------------------------
+// EAPOL 4-way handshake worker.
+//
+// Drains fEapolInbox.  Frames are deposited there by _RxFrameReceived
+// when an incoming frame's ethertype is 0x888E.  We can't process EAPOL
+// inline in the RX callback (it needs USB control transfers to install
+// keys to the chip's CAM, which would deadlock the bulk-IN context),
+// hence the dedicated thread.
+//
+// The state machine itself is a placeholder this commit — it parses
+// what it sees, but doesn't TX M2 yet.  The crypto plumbing (PRF-384
+// for PTK derivation, HMAC-SHA1 for MIC, AES key wrap for M3 GTK
+// extraction) is all in WPA2Crypto.cpp and ready to wire up next.
+// ---------------------------------------------------------------------------
+int32
+RTL8814AUDevice::_Eapol4WayThreadEntry(void* arg)
+{
+	RTL8814AUDevice* device = static_cast<RTL8814AUDevice*>(arg);
+	device->_Eapol4WayLoop();
+	return 0;
+}
+
+
+void
+RTL8814AUDevice::_Eapol4WayLoop()
+{
+	while (!fEapolStop) {
+		status_t status = acquire_sem(fEapolReady);
+		if (status != B_OK || fEapolStop)
+			break;
+		if (fRemoved)
+			continue;
+
+		// Drain whatever's pending under fLock.  Single-slot inbox so
+		// at most one frame per wakeup; release_sem in _RxFrameReceived
+		// signals one wakeup per arrival.
+		uint8 payload[300];
+		uint32 length;
+		uint8 senderMac[6];
+		bool drained;
+		{
+			MutexLocker locker(fLock);
+			drained = fEapolPending;
+			if (drained) {
+				memcpy(payload, fEapolInbox.payload, fEapolInbox.length);
+				memcpy(senderMac, fEapolInbox.senderMac, 6);
+				length = fEapolInbox.length;
+				fEapolPending = false;
+			}
+		}
+		if (drained)
+			_HandleEapolFrame(payload, length, senderMac);
+	}
+}
+
+
+// EAPOL frame parser + state machine driver.  Called from the EAPOL
+// worker thread under no locks (state mutated only from this thread,
+// inbox already copied out).
+//
+// EAPOL frame format per IEEE 802.1X-2010 §11.3:
+//   uint8  version     (typically 2 = 802.1X-2004)
+//   uint8  type        (3 = Key)
+//   uint16 length      (BE, body length excluding this 4-byte header)
+//   <body of `length` bytes>
+//
+// EAPOL-Key body for descriptor type 2 (RSN, used by WPA2):
+//   uint8  desc_type    (0x02)
+//   uint16 key_info     (BE) - bit-mask: pairwise/install/ack/MIC/secure/...
+//   uint16 key_length   (BE)
+//   uint8  key_replay[8]
+//   uint8  key_nonce[32]
+//   uint8  key_iv[16]
+//   uint8  key_rsc[8]
+//   uint8  reserved[8]
+//   uint8  key_mic[16]
+//   uint16 key_data_len (BE)
+//   uint8  key_data[key_data_len]   - holds the RSN IE in M2 / M3, GTK in M3
+void
+RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
+	const uint8 senderMac[6])
+{
+	if (length < 99) {
+		// Smallest EAPOL-Key with empty key_data is 4 + 95 = 99 bytes.
+		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL too short: %u bytes\n",
+			(unsigned)length);
+		return;
+	}
+
+	uint8 version = payload[0];
+	uint8 packetType = payload[1];
+	uint16 bodyLen = ((uint16)payload[2] << 8) | payload[3];
+	if (packetType != 3) {
+		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL ignored: not a Key frame "
+			"(type=%u)\n", packetType);
+		return;
+	}
+	if (length < 4u + bodyLen) {
+		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL truncated: header says %u "
+			"bytes, frame is %u\n", (unsigned)bodyLen, (unsigned)length);
+		return;
+	}
+
+	// Walk the EAPOL-Key body.
+	const uint8* body = payload + 4;
+	uint8 descType = body[0];
+	uint16 keyInfo = ((uint16)body[1] << 8) | body[2];
+	uint16 keyLen = ((uint16)body[3] << 8) | body[4];
+	const uint8* nonce = body + 13;
+	const uint8* keyMic = body + 77;
+	uint16 keyDataLen = ((uint16)body[93] << 8) | body[94];
+
+	bool pairwise = (keyInfo & 0x0008) != 0;	// bit 3
+	bool install  = (keyInfo & 0x0040) != 0;	// bit 6
+	bool keyAck   = (keyInfo & 0x0080) != 0;	// bit 7
+	bool keyMicSet = (keyInfo & 0x0100) != 0;	// bit 8
+	bool secure   = (keyInfo & 0x0200) != 0;	// bit 9
+	uint8 keyDescVer = keyInfo & 0x0007;
+
+	// Identify message: M1 = Ack only; M3 = Ack + MIC + Install.
+	const char* whichMsg = "?";
+	if (pairwise) {
+		if (keyAck && !keyMicSet && !install) whichMsg = "M1";
+		else if (!keyAck && keyMicSet && !install) whichMsg = "M2 (from us?!)";
+		else if (keyAck && keyMicSet && install) whichMsg = "M3";
+		else if (!keyAck && keyMicSet && !install && secure) whichMsg = "M4 (from us?!)";
+	}
+
+	dprintf(RTL8814AU_DRIVER_NAME ": EAPOL %s ver=%u keyInfo=0x%04x "
+		"(descVer=%u pair=%d install=%d ack=%d mic=%d secure=%d) "
+		"keyLen=%u replayCtr=%02x%02x%02x%02x%02x%02x%02x%02x "
+		"keyDataLen=%u from %02x:%02x:%02x:%02x:%02x:%02x\n",
+		whichMsg, version, keyInfo, keyDescVer, pairwise, install, keyAck,
+		keyMicSet, secure, keyLen,
+		body[5], body[6], body[7], body[8], body[9], body[10], body[11], body[12],
+		keyDataLen,
+		senderMac[0], senderMac[1], senderMac[2],
+		senderMac[3], senderMac[4], senderMac[5]);
+	(void)descType;
+	(void)keyMic;
+	(void)nonce;
+
+	// State transitions.  Real M2/M3/M4 generation arrives in a
+	// follow-up commit once the IOC_HAIKU_JOIN PMK is plumbed in.
+	if (pairwise && keyAck && !keyMicSet && !install) {
+		// M1 — capture the ANonce.
+		memcpy(fAnonce, nonce, 32);
+		fEapolState = kEapolWaitM3;
+		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> WaitM3 "
+			"(captured ANonce[0..3]=%02x%02x%02x%02x)\n",
+			fAnonce[0], fAnonce[1], fAnonce[2], fAnonce[3]);
+	}
 }
 
 

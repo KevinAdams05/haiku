@@ -236,6 +236,26 @@ private:
 	bool						fEapolPending;
 	sem_id						fEapolReady;
 
+	// 4-way handshake state machine.  Spawned at device open, runs
+	// for the lifetime of the open.  Drains fEapolInbox under fLock,
+	// drives M1 -> M2 -> M3 -> M4, derives PTK, programs chip CAM.
+	thread_id					fEapolThread;
+	bool						fEapolStop;
+	enum EapolState {
+		kEapolIdle,			// no handshake in progress / done
+		kEapolWaitM1,		// associated, waiting for AP's M1
+		kEapolWaitM3,		// sent M2, waiting for M3
+		kEapolDone			// keys installed, link is encrypted
+	};
+	EapolState					fEapolState;
+	uint8						fAnonce[32];	// from M1
+	uint8						fSnonce[32];	// our random, computed before M2
+
+	static int32				_Eapol4WayThreadEntry(void* arg);
+	void						_Eapol4WayLoop();
+	void						_HandleEapolFrame(const uint8* payload,
+									uint32 length, const uint8 senderMac[6]);
+
 	// Link state change notification
 	sem_id						fLinkStateSem;	// Provided by network stack
 
