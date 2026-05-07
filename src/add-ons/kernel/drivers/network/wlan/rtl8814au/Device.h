@@ -177,6 +177,8 @@ private:
 	int32						fRoaming;
 	int32						fPrivacy;
 	int32						fWpaMode;
+	int32						fAuthMode;
+	int32						fDropUnencrypted;
 
 	// RSN information element supplied by wpa_supplicant via
 	// IEEE80211_IOC_APPIE / IEEE80211_APPIE_WPA.  When the assoc-req

@@ -78,6 +78,8 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fRoaming = 0;
 	fPrivacy = 0;
 	fWpaMode = 0;
+	fAuthMode = 0;
+	fDropUnencrypted = 0;
 	memset(fWpaIe, 0, sizeof(fWpaIe));
 	fWpaIeLength = 0;
 	fRxRingHead = 0;
@@ -1263,9 +1265,6 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 		case IEEE80211_IOC_MLME:
 		{
 			// Auth/Assoc/Deauth/Disassoc command from wpa_supplicant.
-			// Diagnostic: parse the ieee80211req_mlme out of i_data and
-			// log im_op + im_reason + im_macaddr so we can reverse-
-			// engineer the sequence wpa_supplicant uses.
 			struct ieee80211req_mlme mlme;
 			memset(&mlme, 0, sizeof(mlme));
 			uint32 copyLen = request.i_len < sizeof(mlme)
@@ -1278,12 +1277,42 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 			};
 			const char* opName = mlme.im_op <= 6
 				? opNames[mlme.im_op] : "???";
-			dprintf(RTL8814AU_DRIVER_NAME ": IOC_MLME stub: op=%u(%s) "
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_MLME op=%u(%s) "
 				"reason=%u mac=%02x:%02x:%02x:%02x:%02x:%02x ssid_len=%u\n",
 				mlme.im_op, opName, mlme.im_reason,
 				mlme.im_macaddr[0], mlme.im_macaddr[1], mlme.im_macaddr[2],
 				mlme.im_macaddr[3], mlme.im_macaddr[4], mlme.im_macaddr[5],
 				mlme.im_ssid_len);
+
+			if (mlme.im_op == IEEE80211_MLME_ASSOC) {
+				// wpa_supplicant has already deposited the RSN IE via
+				// IOC_APPIE and set IOC_PRIVACY=1 / IOC_WPA=2.
+				// _SendAssocRequest will splice fWpaIe into the assoc-req
+				// body and set the Privacy bit in the capability info.
+				char ssid[33];
+				uint32 ssidLen = mlme.im_ssid_len < sizeof(ssid) - 1
+					? mlme.im_ssid_len : sizeof(ssid) - 1;
+				memcpy(ssid, mlme.im_ssid, ssidLen);
+				ssid[ssidLen] = 0;
+				return _DoJoin(mlme.im_macaddr, ssid, ssidLen);
+			}
+
+			if (mlme.im_op == IEEE80211_MLME_DEAUTH
+				|| mlme.im_op == IEEE80211_MLME_DISASSOC) {
+				// wpa_supplicant tearing down — return to idle so a
+				// follow-up ASSOC starts cleanly.  We don't yet TX a
+				// deauth/disassoc frame to the AP; the connection
+				// times out on its end.
+				fJoinState = kJoinIdle;
+				if (fWiFiManager != NULL)
+					fWiFiManager->Disconnect();
+				return B_OK;
+			}
+
+			// AUTH / AUTHORIZE / UNAUTHORIZE — accept and move on.
+			// AUTHORIZE is the post-4-way-handshake "this STA is now
+			// allowed to send data" hint; we'll wire it up alongside
+			// the CCMP enable in a later commit.
 			return B_OK;
 		}
 
@@ -1354,6 +1383,29 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 				key.ik_keydata[0], key.ik_keydata[1], key.ik_keydata[2],
 				key.ik_keydata[3], key.ik_keydata[4], key.ik_keydata[5],
 				key.ik_keydata[6], key.ik_keydata[7]);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_AUTHMODE:
+		{
+			// 802.11 authentication algorithm: 1=open, 2=shared, 3=8021x.
+			// wpa_supplicant SETs this to 1 (open) for WPA2-PSK because
+			// the actual key derivation happens in EAPOL after assoc.
+			fAuthMode = request.i_val;
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_AUTHMODE SET %d\n",
+				(int)request.i_val);
+			return B_OK;
+		}
+
+		case IEEE80211_IOC_DROPUNENCRYPTED:
+		{
+			// Drop unencrypted frames once we're associated with privacy
+			// on.  Bookkeeping today; chip-level drop is handled implicitly
+			// once CCMP is enabled (frames without the Protected bit set
+			// fail decryption and are reported as ICV errors).
+			fDropUnencrypted = request.i_val;
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_DROPUNENCRYPTED SET %d\n",
+				(int)request.i_val);
 			return B_OK;
 		}
 
@@ -1498,6 +1550,14 @@ RTL8814AUDevice::_Get80211(void* userArgs, size_t length)
 
 		case IEEE80211_IOC_WPA:
 			request.i_val = fWpaMode;
+			return user_memcpy(userArgs, &request, sizeof(request));
+
+		case IEEE80211_IOC_AUTHMODE:
+			request.i_val = fAuthMode;
+			return user_memcpy(userArgs, &request, sizeof(request));
+
+		case IEEE80211_IOC_DROPUNENCRYPTED:
+			request.i_val = fDropUnencrypted;
 			return user_memcpy(userArgs, &request, sizeof(request));
 
 		case IEEE80211_IOC_DEVCAPS:
@@ -2568,7 +2628,9 @@ RTL8814AUDevice::_SendAuthRequest()
 
 
 /*! Build and transmit an association request frame (subtype 0).
-    Body: capability info, listen interval, SSID IE, supported rates IE.
+    Body: capability info, listen interval, SSID IE, supported rates IE,
+    and (when joining a WPA2 network) the RSN IE wpa_supplicant deposited
+    via IOC_APPIE.  Capability's Privacy bit is set when fPrivacy != 0.
 */
 status_t
 RTL8814AUDevice::_SendAssocRequest()
@@ -2586,8 +2648,14 @@ RTL8814AUDevice::_SendAssocRequest()
 	frame[i++] = seq & 0xFF;
 	frame[i++] = (seq >> 8) & 0xFF;
 
-	// Body
-	frame[i++] = 0x01; frame[i++] = 0x00;	// capability info: ESS only
+	// Capability info: ESS bit always.  Privacy bit set on WPA2 so the
+	// AP knows we want encrypted frames.
+	uint16 capInfo = 0x0001;
+	if (fPrivacy != 0)
+		capInfo |= 0x0010;
+	frame[i++] = capInfo & 0xFF;
+	frame[i++] = (capInfo >> 8) & 0xFF;
+
 	frame[i++] = 0x14; frame[i++] = 0x00;	// listen interval = 20
 
 	// SSID IE
@@ -2610,8 +2678,19 @@ RTL8814AUDevice::_SendAssocRequest()
 	frame[i++] = 0x30; frame[i++] = 0x48;
 	frame[i++] = 0x60; frame[i++] = 0x6C;
 
-	dprintf(RTL8814AU_DRIVER_NAME ": TX assoc request len=%u\n",
-		(unsigned)i);
+	// RSN IE (WPA2) — verbatim from IOC_APPIE.  fWpaIe already includes
+	// the IE header (id 0x30 + length), so just memcpy.
+	if (fWpaIeLength > 0 && i + fWpaIeLength <= sizeof(frame)) {
+		memcpy(frame + i, fWpaIe, fWpaIeLength);
+		i += fWpaIeLength;
+		dprintf(RTL8814AU_DRIVER_NAME ": TX assoc request (WPA2) "
+			"len=%u, with %u-byte RSN IE\n",
+			(unsigned)i, (unsigned)fWpaIeLength);
+	} else {
+		dprintf(RTL8814AU_DRIVER_NAME ": TX assoc request (open) "
+			"len=%u\n", (unsigned)i);
+	}
+
 	return fTxPath->Transmit(frame, i, kTxQueueMGT, 0, 0,
 		kSecurityNone, false);
 }
