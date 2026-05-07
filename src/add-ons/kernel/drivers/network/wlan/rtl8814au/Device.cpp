@@ -2202,6 +2202,22 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 	const uint8* payload = &eth[14];
 	uint32 payloadLen = (uint32)*numBytes - 14;
 
+	// EAPOL frame — log so we can see the 4-way handshake from
+	// our side too.
+	if (etherType == 0x888E) {
+		dprintf(RTL8814AU_DRIVER_NAME ": TX EAPOL %u bytes payload "
+			"[%02x %02x %02x %02x %02x %02x %02x %02x]\n",
+			(unsigned)payloadLen,
+			payloadLen > 0 ? payload[0] : 0,
+			payloadLen > 1 ? payload[1] : 0,
+			payloadLen > 2 ? payload[2] : 0,
+			payloadLen > 3 ? payload[3] : 0,
+			payloadLen > 4 ? payload[4] : 0,
+			payloadLen > 5 ? payload[5] : 0,
+			payloadLen > 6 ? payload[6] : 0,
+			payloadLen > 7 ? payload[7] : 0);
+	}
+
 	bool isBroadcast = (dstMAC[0] & 0x01) != 0;
 
 	// Build the 802.11 + LLC/SNAP header on the stack.  Max payload
@@ -2363,6 +2379,26 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	memcpy(&entry->data[14], &frameData[k80211HeaderLen + kLLCSnapLen],
 		payloadLen);
 	entry->length = ethLen;
+
+	// EAPOL frame (ethertype 0x888E) — log so we can see the
+	// 4-way handshake unfold.  Includes the EAPOL-Key descriptor type
+	// at byte 14 (the first byte of the EAPOL payload).
+	if (llc[6] == 0x88 && llc[7] == 0x8E) {
+		uint8 fcByte0 = frameData[0];
+		uint8 protectedBit = (frameData[1] >> 6) & 0x01;
+		dprintf(RTL8814AU_DRIVER_NAME ": RX EAPOL %u bytes "
+			"protected=%u FC=0x%02x payload[0..7]=%02x%02x%02x%02x"
+			"%02x%02x%02x%02x\n",
+			(unsigned)payloadLen, protectedBit, fcByte0,
+			payloadLen > 0 ? entry->data[14] : 0,
+			payloadLen > 1 ? entry->data[15] : 0,
+			payloadLen > 2 ? entry->data[16] : 0,
+			payloadLen > 3 ? entry->data[17] : 0,
+			payloadLen > 4 ? entry->data[18] : 0,
+			payloadLen > 5 ? entry->data[19] : 0,
+			payloadLen > 6 ? entry->data[20] : 0,
+			payloadLen > 7 ? entry->data[21] : 0);
+	}
 
 	device->fRxRingHead = nextHead;
 	locker.Unlock();
@@ -2773,6 +2809,31 @@ RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
 	// instead of waiting for its next periodic check.
 	if (fLinkStateSem >= 0)
 		release_sem_etc(fLinkStateSem, 1, B_DO_NOT_RESCHEDULE);
+
+	// Publish B_NETWORK_WLAN_JOINED so wpa_supplicant's
+	// driver_haiku_events BLooper sees it and dispatches EVENT_ASSOC
+	// into driver_bsd's state machine.  Without this wpa_supplicant
+	// stays in CONNECTING — it never moves into the EAPOL-handshake
+	// state, never processes incoming EAPOL frames, and times out
+	// into IOC_MLME DEAUTH after a few seconds.  fLinkStateSem above
+	// only wakes net_server's link-state poller; it does not reach
+	// wpa_supplicant.
+	if (gNotificationModule != NULL && !fRemoved) {
+		char ifPath[64];
+		snprintf(ifPath, sizeof(ifPath), "%s/%" B_PRIu32,
+			RTL8814AU_DEVICE_PATH_BASE, fSlotIndex);
+
+		char messageBuffer[512];
+		KMessage message;
+		message.SetTo(messageBuffer, sizeof(messageBuffer),
+			B_NETWORK_MONITOR);
+		message.AddInt32("opcode", B_NETWORK_WLAN_JOINED);
+		message.AddString("interface", ifPath);
+
+		gNotificationModule->send_notification(&message);
+		dprintf(RTL8814AU_DRIVER_NAME ": fired B_NETWORK_WLAN_JOINED "
+			"for %s\n", ifPath);
+	}
 	// Wake the post-assoc worker so it issues the firmware H2C setup
 	// (RA_INFO + MEDIA_STATUS_RPT) from a context that can safely
 	// block on USB control transfers.
