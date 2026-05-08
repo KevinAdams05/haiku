@@ -2512,26 +2512,13 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		device->fEapolInbox.length = payloadLen;
 		device->fEapolPending = true;
 
-		dprintf(RTL8814AU_DRIVER_NAME ": RX EAPOL diverted to inbox: "
-			"%u bytes from %02x:%02x:%02x:%02x:%02x:%02x "
-			"protected=%u FC=0x%02x payload[0..7]="
-			"%02x%02x%02x%02x%02x%02x%02x%02x\n",
-			(unsigned)payloadLen,
-			device->fEapolInbox.senderMac[0],
-			device->fEapolInbox.senderMac[1],
-			device->fEapolInbox.senderMac[2],
-			device->fEapolInbox.senderMac[3],
-			device->fEapolInbox.senderMac[4],
-			device->fEapolInbox.senderMac[5],
-			protectedBit, fcByte0,
-			payloadLen > 0 ? device->fEapolInbox.payload[0] : 0,
-			payloadLen > 1 ? device->fEapolInbox.payload[1] : 0,
-			payloadLen > 2 ? device->fEapolInbox.payload[2] : 0,
-			payloadLen > 3 ? device->fEapolInbox.payload[3] : 0,
-			payloadLen > 4 ? device->fEapolInbox.payload[4] : 0,
-			payloadLen > 5 ? device->fEapolInbox.payload[5] : 0,
-			payloadLen > 6 ? device->fEapolInbox.payload[6] : 0,
-			payloadLen > 7 ? device->fEapolInbox.payload[7] : 0);
+		// Heavy diagnostic dropped.  The EAPOL worker logs the parsed
+		// frame in _HandleEapolFrame; logging here too produces enough
+		// per-frame syslog volume during AP retries to expose a latent
+		// BFS race in Haiku's vnode finalization (the
+		// acquire_vnode-wasn't-used panic from 2026-05-04).
+		(void)protectedBit;
+		(void)fcByte0;
 
 		locker.Unlock();
 
@@ -3166,19 +3153,17 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		else if (!keyAck && keyMicSet && !install && secure) whichMsg = "M4 (from us?!)";
 	}
 
-	dprintf(RTL8814AU_DRIVER_NAME ": EAPOL %s ver=%u keyInfo=0x%04x "
-		"(descVer=%u pair=%d install=%d ack=%d mic=%d secure=%d) "
-		"keyLen=%u replayCtr=%02x%02x%02x%02x%02x%02x%02x%02x "
-		"keyDataLen=%u from %02x:%02x:%02x:%02x:%02x:%02x\n",
-		whichMsg, version, keyInfo, keyDescVer, pairwise, install, keyAck,
-		keyMicSet, secure, keyLen,
-		body[5], body[6], body[7], body[8], body[9], body[10], body[11], body[12],
-		keyDataLen,
-		senderMac[0], senderMac[1], senderMac[2],
-		senderMac[3], senderMac[4], senderMac[5]);
+	// Single-line classifier — verbose hex dumps removed to keep syslog
+	// volume low (BFS acquire_vnode panics correlate with log floods).
+	dprintf(RTL8814AU_DRIVER_NAME ": EAPOL %s keyInfo=0x%04x keyDataLen=%u\n",
+		whichMsg, keyInfo, keyDataLen);
 	(void)descType;
 	(void)keyMic;
 	(void)nonce;
+	(void)version;
+	(void)keyDescVer;
+	(void)keyLen;
+	(void)secure;
 
 	// M1 -> M2: capture ANonce, derive PTK, build M2 with HMAC-SHA1 MIC.
 	if (pairwise && keyAck && !keyMicSet && !install) {
@@ -3220,15 +3205,7 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			ptkData, 76, fPtk);
 		fPtkValid = true;
 
-		dprintf(RTL8814AU_DRIVER_NAME ": M1 processed: "
-			"SNonce[0..3]=%02x%02x%02x%02x ANonce[0..3]=%02x%02x%02x%02x "
-			"KCK[0..3]=%02x%02x%02x%02x KEK[0..3]=%02x%02x%02x%02x "
-			"TK[0..3]=%02x%02x%02x%02x\n",
-			fSnonce[0], fSnonce[1], fSnonce[2], fSnonce[3],
-			fAnonce[0], fAnonce[1], fAnonce[2], fAnonce[3],
-			fPtk[0], fPtk[1], fPtk[2], fPtk[3],
-			fPtk[16], fPtk[17], fPtk[18], fPtk[19],
-			fPtk[32], fPtk[33], fPtk[34], fPtk[35]);
+		dprintf(RTL8814AU_DRIVER_NAME ": M1 processed, PTK derived\n");
 
 		// Build EAPOL-Key M2 frame in a stack buffer.  EAPOL header
 		// (4 bytes) + EAPOL-Key fixed (95 bytes) + RSN IE (key_data_len)
@@ -3279,11 +3256,8 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		wpa2_crypto::hmac_sha1(kck, 16, m2, m2Len, mic);
 		memcpy(m2 + 81, mic, 16);
 
-		dprintf(RTL8814AU_DRIVER_NAME ": built M2 (%u bytes) "
-			"MIC[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-			(unsigned)m2Len,
-			m2[81], m2[82], m2[83], m2[84],
-			m2[85], m2[86], m2[87], m2[88]);
+		dprintf(RTL8814AU_DRIVER_NAME ": built M2 (%u bytes)\n",
+			(unsigned)m2Len);
 
 		// Wrap M2 in an 802.11 data frame + LLC/SNAP and TX it.  Layout
 		// matches the eth -> 802.11 conversion in Write() except the
@@ -3301,6 +3275,153 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		fEapolState = kEapolWaitM3;
 		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> WaitM3 "
 			"(M2 sent on-air)\n");
+		return;
+	}
+
+	// M3: pair=1, install=1, ack=1, mic=1.  AP delivers the GTK
+	// (encrypted with KEK via RFC 3394 AES key wrap) in key_data.
+	if (pairwise && keyAck && keyMicSet && install
+			&& fEapolState == kEapolWaitM3 && fPtkValid) {
+		// Validate the MIC over the EAPOL frame (exactly 4 + bodyLen
+		// bytes — anything trailing is FCS/pad and the AP excluded it
+		// from its MIC computation).  M3's MIC is
+		// HMAC-SHA1(KCK, frame_with_mic_zeroed)[0..15].
+		uint32 hashLen = 4u + bodyLen;
+		uint8 m3copy[300];
+		if (hashLen > sizeof(m3copy)) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M3 too large (%u bytes), "
+				"dropping\n", (unsigned)hashLen);
+			return;
+		}
+		memcpy(m3copy, payload, hashLen);
+		uint8 receivedMic[16];
+		memcpy(receivedMic, m3copy + 4 + 77, 16);	// 4 EAPOL hdr + 77 to MIC
+		memset(m3copy + 4 + 77, 0, 16);
+		uint8 computedMic[20];
+		const uint8* kck = fPtk;	// PTK[0..15]
+		wpa2_crypto::hmac_sha1(kck, 16, m3copy, hashLen, computedMic);
+		if (memcmp(receivedMic, computedMic, 16) != 0) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M3 MIC mismatch "
+				"(received[0..3]=%02x%02x%02x%02x "
+				"computed[0..3]=%02x%02x%02x%02x) — dropping\n",
+				receivedMic[0], receivedMic[1], receivedMic[2], receivedMic[3],
+				computedMic[0], computedMic[1], computedMic[2], computedMic[3]);
+			return;
+		}
+
+		// Decrypt key_data with KEK (PTK[16..31]) using RFC 3394 AES
+		// key unwrap.  M3 with CCMP typically delivers 56 bytes of
+		// wrapped key data = 8-byte IV + 48 bytes wrapped (= 6 blocks)
+		// which unwraps to 48 bytes of plaintext containing the GTK
+		// KDE (and possibly an RSN IE echo).
+		uint8 plaintext[256];
+		if (keyDataLen < 16 || (keyDataLen % 8) != 0
+				|| keyDataLen - 8 > sizeof(plaintext)) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M3 keyDataLen=%u not a "
+				"valid AES-key-wrap size — dropping\n",
+				(unsigned)keyDataLen);
+			return;
+		}
+		const uint8* keyData = body + 95;	// 95 = bytes before key_data
+		const uint8* kek = fPtk + 16;
+		bool unwrapOk = wpa2_crypto::aes_unwrap(kek, keyData, keyDataLen,
+			plaintext);
+		uint32 ptLen = keyDataLen - 8;
+		if (!unwrapOk) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M3 aes_unwrap failed "
+				"(IV mismatch) — dropping\n");
+			return;
+		}
+		dprintf(RTL8814AU_DRIVER_NAME ": M3 MIC OK, %u plaintext bytes\n",
+			(unsigned)ptLen);
+
+		// Walk the unwrapped plaintext for KDEs.  Each KDE:
+		//   uint8 type    = 0xDD (vendor-specific)
+		//   uint8 length  = N (excludes type+length)
+		//   uint8 oui[3]  = 00 0F AC
+		//   uint8 kdeType = 1 = GTK, 2 = MAC, ...
+		//   uint8 data[N - 4]
+		// Some elements are RSN IEs (type 0x30) instead.  Skip those.
+		uint32 off = 0;
+		uint8 gtkKey[32];
+		uint32 gtkLen = 0;
+		uint8 gtkKeyId = 0;
+		while (off + 2 <= ptLen) {
+			uint8 elementId = plaintext[off];
+			uint8 elementLen = plaintext[off + 1];
+			if (off + 2 + elementLen > ptLen)
+				break;
+			if (elementId == 0xDD && elementLen >= 6
+					&& plaintext[off + 2] == 0x00
+					&& plaintext[off + 3] == 0x0F
+					&& plaintext[off + 4] == 0xAC
+					&& plaintext[off + 5] == 0x01) {
+				// GTK KDE: bytes after OUI+kdeType:
+				//   [2] KeyID flags (lower 2 bits = key id)
+				//   [N-2] GTK
+				gtkKeyId = plaintext[off + 6] & 0x03;
+				gtkLen = elementLen - 6;
+				if (gtkLen > sizeof(gtkKey))
+					gtkLen = sizeof(gtkKey);
+				memcpy(gtkKey, &plaintext[off + 8], gtkLen);
+			}
+			off += 2 + elementLen;
+		}
+		if (gtkLen == 0) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M3 unwrap OK but no GTK KDE "
+				"found in plaintext — dropping\n");
+			return;
+		}
+		dprintf(RTL8814AU_DRIVER_NAME ": M3 GTK extracted: keyId=%u len=%u\n",
+			gtkKeyId, (unsigned)gtkLen);
+
+		// Build M4: same skeleton as M2 but with no key_data, secure
+		// bit set in Key Info, replay counter echoed from M3.
+		uint8 m4[99];
+		memset(m4, 0, sizeof(m4));
+		m4[0] = 0x02;	// EAPOL ver
+		m4[1] = 0x03;	// EAPOL type Key
+		uint16 m4Body = sizeof(m4) - 4;
+		m4[2] = (uint8)(m4Body >> 8);
+		m4[3] = (uint8)m4Body;
+		m4[4] = 0x02;	// desc type RSN
+		// Key Info: descVer=2, pair=1, MIC=1, secure=1.  Bits set:
+		// 1 (descVer 2), 3 (pair), 8 (MIC), 9 (secure) -> 0x030A
+		uint16 m4KeyInfo = 0x030A;
+		m4[5] = (uint8)(m4KeyInfo >> 8);
+		m4[6] = (uint8)m4KeyInfo;
+		m4[7] = 0; m4[8] = 0;	// key_length = 0 in M4
+		// Replay counter — echo M3's value verbatim.
+		memcpy(m4 + 9, body + 5, 8);
+		// nonce, iv, rsc, reserved already zero from memset.
+		// MIC zeroed; computed below.
+		// key_data_len = 0 already.
+
+		// Compute MIC = HMAC-SHA1(KCK, M4)[0..15].
+		uint8 m4Mic[20];
+		wpa2_crypto::hmac_sha1(kck, 16, m4, sizeof(m4), m4Mic);
+		memcpy(m4 + 81, m4Mic, 16);
+
+		dprintf(RTL8814AU_DRIVER_NAME ": built M4 (%u bytes)\n",
+			(unsigned)sizeof(m4));
+
+		status_t txStatus = _TxEapolDataFrame(senderMac, m4, sizeof(m4));
+		if (txStatus != B_OK) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M4 TX failed: %s\n",
+				strerror(txStatus));
+			return;
+		}
+
+		// TODO next session: program PTK[32..47] (TK) + GTK into chip
+		// security CAM via REG_CAMCMD/REG_CAMWRITE, then enable CCMP
+		// in kRegSECCFG.  Until that lands, the AP will start TX'ing
+		// us encrypted data frames our chip can't decrypt and the
+		// connection will look broken at the IP layer.
+		fEapolState = kEapolDone;
+		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> Done "
+			"(M4 sent; PTK + GTK extracted, chip CAM not yet "
+			"programmed)\n");
+		return;
 	}
 }
 
@@ -3348,10 +3469,6 @@ RTL8814AUDevice::_TxEapolDataFrame(const uint8* apMac,
 	// EAPOL payload
 	memcpy(wireFrame + i, eapol, eapolLen);
 	i += eapolLen;
-
-	dprintf(RTL8814AU_DRIVER_NAME ": TX EAPOL on-air %u bytes "
-		"(802.11+LLC framed total %u)\n",
-		(unsigned)eapolLen, (unsigned)i);
 
 	return fTxPath->Transmit(wireFrame, i, kTxQueueBE,
 		kRateCCK1, 0, kSecurityNone, false);
