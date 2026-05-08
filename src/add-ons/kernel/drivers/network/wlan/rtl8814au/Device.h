@@ -261,6 +261,8 @@ private:
 	void						_HandleEapolFrame(const uint8* payload,
 									uint32 length, const uint8 senderMac[6]);
 	void						_GenerateSnonce(uint8 nonce[32]);
+	status_t					_TxEapolDataFrame(const uint8* apMac,
+									const uint8* eapol, uint32 eapolLen);
 
 	// Link state change notification
 	sem_id						fLinkStateSem;	// Provided by network stack

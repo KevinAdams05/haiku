@@ -1347,10 +1347,27 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 
 			if (mlme.im_op == IEEE80211_MLME_DEAUTH
 				|| mlme.im_op == IEEE80211_MLME_DISASSOC) {
-				// wpa_supplicant tearing down — return to idle so a
-				// follow-up ASSOC starts cleanly.  We don't yet TX a
-				// deauth/disassoc frame to the AP; the connection
-				// times out on its end.
+				// While the in-driver WPA2 handshake is in flight, ignore
+				// external DEAUTH/DISASSOC.  net_server's auth-mode
+				// reconciliation tries to tear us down right after our
+				// successful ASSOC because it sees an open assoc on a
+				// WPA2 BSS (its own state machine never finished, since
+				// it routes through wpa_supplicant which can't drive
+				// EAPOL on Haiku).  Once fEapolState == kEapolDone the
+				// connection is fully ours and DEAUTH means user intent.
+				if (fPmkValid && fEapolState != kEapolDone
+						&& fEapolState != kEapolIdle) {
+					dprintf(RTL8814AU_DRIVER_NAME ": ignoring external "
+						"%s during in-driver WPA2 handshake "
+						"(eapolState=%d)\n",
+						mlme.im_op == IEEE80211_MLME_DEAUTH
+							? "DEAUTH" : "DISASSOC",
+						(int)fEapolState);
+					return B_OK;
+				}
+				// Otherwise, tear down cleanly so a follow-up ASSOC can
+				// start fresh.  No on-air deauth frame yet — the AP
+				// times us out on its end.
 				fJoinState = kJoinIdle;
 				if (fWiFiManager != NULL)
 					fWiFiManager->Disconnect();
@@ -1522,6 +1539,30 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 				fJoinSsid[req.jp_ssid_len] = 0;
 				fJoinSsidLength = req.jp_ssid_len;
 				memcpy(fJoinBssid, req.jp_bssid, 6);
+
+				// Synthesize the RSN IE for the assoc-req body.  Without
+				// this, _SendAssocRequest sees fWpaIeLength == 0 and emits
+				// an open-mode assoc-req — the AP accepts us as an open
+				// client but the 4-way handshake never starts.  We hard-
+				// code AKM 00-0F-AC:2 (PSK) with CCMP for both pairwise
+				// and group cipher; if a future caller wants TKIP or a
+				// different AKM we'd extend rtl_haiku_join_psk to carry
+				// the cipher selectors.  The IE is identical to what
+				// wpa_supplicant deposits via IOC_APPIE today.
+				if (fWpaIeLength == 0) {
+					static const uint8 sRsnIeCcmpPsk[22] = {
+						0x30, 0x14,				// element id 48, length 20
+						0x01, 0x00,				// version 1
+						0x00, 0x0F, 0xAC, 0x04,	// group cipher = CCMP
+						0x01, 0x00,				// pairwise count = 1
+						0x00, 0x0F, 0xAC, 0x04,	// pairwise cipher = CCMP
+						0x01, 0x00,				// AKM count = 1
+						0x00, 0x0F, 0xAC, 0x02,	// AKM = PSK
+						0x00, 0x00,				// RSN capabilities
+					};
+					memcpy(fWpaIe, sRsnIeCcmpPsk, sizeof(sRsnIeCcmpPsk));
+					fWpaIeLength = sizeof(sRsnIeCcmpPsk);
+				}
 
 				dprintf(RTL8814AU_DRIVER_NAME ": IOC_HAIKU_JOIN (WPA2-PSK): "
 					"ssid='%s' bssid=%02x:%02x:%02x:%02x:%02x:%02x "
@@ -3244,17 +3285,76 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			m2[81], m2[82], m2[83], m2[84],
 			m2[85], m2[86], m2[87], m2[88]);
 
-		// TODO next session: TX m2 via fTxPath as a data frame
-		// wrapped in 802.11 header (ToDS=1, Addr1=BSSID,
-		// Addr2=our MAC, Addr3=AP-MAC) + LLC/SNAP with ethertype 0x888E.
-		// For now we stop here — we want to verify PTK derivation
-		// and MIC computation match what the AP expects before we
-		// commit to the on-air TX path.
+		// Wrap M2 in an 802.11 data frame + LLC/SNAP and TX it.  Layout
+		// matches the eth -> 802.11 conversion in Write() except the
+		// ethertype is fixed (EAPOL = 0x888E) and we splice the EAPOL
+		// bytes directly without going through the data ring.  Protected
+		// bit stays clear because the chip has no keys yet.
+		status_t txStatus = _TxEapolDataFrame(senderMac, m2, m2Len);
+		if (txStatus != B_OK) {
+			dprintf(RTL8814AU_DRIVER_NAME ": M2 TX failed: %s\n",
+				strerror(txStatus));
+			// Stay in WaitM1 so an AP retry of M1 gets us another shot.
+			return;
+		}
 
 		fEapolState = kEapolWaitM3;
 		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> WaitM3 "
-			"(M2 ready in driver, TX deferred)\n");
+			"(M2 sent on-air)\n");
 	}
+}
+
+
+// Send EAPOL bytes as an 802.11 data frame (ToDS=1, Protected=0).
+// Used by the in-driver 4-way handshake to put M2/M4 on the air.
+//
+// Wire layout:
+//   [24] 802.11 header (FC=0x08 0x01, addrs ours/BSSID/AP)
+//   [8]  LLC/SNAP (AA AA 03 00 00 00 88 8E)
+//   [N]  EAPOL bytes verbatim
+status_t
+RTL8814AUDevice::_TxEapolDataFrame(const uint8* apMac,
+	const uint8* eapol, uint32 eapolLen)
+{
+	if (fTxPath == NULL)
+		return B_NO_INIT;
+	if (eapolLen > 256)
+		return B_BUFFER_OVERFLOW;
+
+	uint8 wireFrame[24 + 8 + 256];
+	uint32 i = 0;
+
+	// 802.11 data-frame header
+	wireFrame[i++] = 0x08;	// FC[0]: type=Data (2), subtype=0
+	wireFrame[i++] = 0x01;	// FC[1]: ToDS=1, FromDS=0, Protected=0
+	wireFrame[i++] = 0x00;	// Duration low
+	wireFrame[i++] = 0x3A;	// Duration high (314us)
+	memcpy(wireFrame + i, fJoinBssid, 6); i += 6;	// Addr1 = BSSID (RA)
+	memcpy(wireFrame + i, fMacAddress, 6); i += 6;	// Addr2 = our MAC (TA)
+	memcpy(wireFrame + i, apMac, 6); i += 6;		// Addr3 = AP MAC (DA)
+	wireFrame[i++] = 0;		// SeqCtrl low (HW fills via HWSEQ_EN)
+	wireFrame[i++] = 0;		// SeqCtrl high
+
+	// LLC/SNAP encapsulation, ethertype = EAPOL (0x888E)
+	wireFrame[i++] = 0xAA;
+	wireFrame[i++] = 0xAA;
+	wireFrame[i++] = 0x03;
+	wireFrame[i++] = 0x00;
+	wireFrame[i++] = 0x00;
+	wireFrame[i++] = 0x00;
+	wireFrame[i++] = 0x88;
+	wireFrame[i++] = 0x8E;
+
+	// EAPOL payload
+	memcpy(wireFrame + i, eapol, eapolLen);
+	i += eapolLen;
+
+	dprintf(RTL8814AU_DRIVER_NAME ": TX EAPOL on-air %u bytes "
+		"(802.11+LLC framed total %u)\n",
+		(unsigned)eapolLen, (unsigned)i);
+
+	return fTxPath->Transmit(wireFrame, i, kTxQueueBE,
+		kRateCCK1, 0, kSecurityNone, false);
 }
 
 
