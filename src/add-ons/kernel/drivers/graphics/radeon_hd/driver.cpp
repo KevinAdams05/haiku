@@ -1,12 +1,14 @@
 /*
  * Copyright (c) 2002, Thomas Kurschel
  * Copyright 2004-2016 Haiku, Inc. All rights reserved.
+ * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All Rights Reserved.
  * Distributed under the terms of the MIT License.
  *
  * Authors:
  *		Thomas Kurschel
  *		Clemens Zeidler, <haiku@clemens-zeidler.de>
  *		Alexander von Gluck IV, kallisti5@unixzen.com
+ *		Kevin Adams <kevinadams05@gmail.com>
  */
 
 

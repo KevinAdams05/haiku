@@ -1,10 +1,12 @@
 /*
  * Copyright 2011-2015, Haiku, Inc. All Rights Reserved.
+ * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All Rights Reserved.
  * Distributed under the terms of the MIT License.
  *
  * Authors:
  *		Alexander von Gluck IV, kallisti5@unixzen.com
  *		Bill Randle, billr@neocat.org
+ *		Kevin Adams <kevinadams05@gmail.com>
  */
 
 

@@ -2,7 +2,8 @@
  * Copyright 2010 Advanced Micro Devices, Inc.
  * Copyright 2000 ATI Technologies Inc., Markham, Ontario, and
  *                VA Linux Systems Inc., Fremont, California.
- * 
+ * Copyright 2026 Kevin Adams <kevinadams05@gmail.com>.
+ *
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a

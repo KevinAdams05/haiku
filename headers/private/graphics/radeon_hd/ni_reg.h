@@ -1,5 +1,6 @@
 /*
  * Copyright 2010 Advanced Micro Devices, Inc.
+ * Copyright 2026 Kevin Adams <kevinadams05@gmail.com>.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
