@@ -603,17 +603,34 @@ static const uint16 kRegBSSID_1			= 0x0708;	// Port 1 BSSID
 
 // RCR (Receive Configuration Register) bit definitions — controls which
 // frames the hardware passes up to the host vs. filtering silently.
-static const uint32 kRCR_AAP				= (1 << 0);	// Accept all packets
-static const uint32 kRCR_APM				= (1 << 1);	// Accept PM frames
-static const uint32 kRCR_AM				= (1 << 2);	// Accept multicast
-static const uint32 kRCR_AB				= (1 << 3);	// Accept broadcast
-static const uint32 kRCR_ACRC32			= (1 << 4);	// Accept CRC errors
-static const uint32 kRCR_AICV				= (1 << 5);	// Accept ICV errors
-static const uint32 kRCR_ADF				= (1 << 7);	// Accept data frames
-static const uint32 kRCR_ACF				= (1 << 8);	// Accept ctrl frames
-static const uint32 kRCR_AMF				= (1 << 9);	// Accept mgmt frames
-static const uint32 kRCR_CBSSID_BCN		= (1 << 12);	// Check BSSID beacon
-static const uint32 kRCR_CBSSID_DATA		= (1 << 13);	// Check BSSID data
+// Per morrownr 8814au hal_com_reg.h.  These are *different* from the
+// older r92c bit positions; copying r92c definitions here was a bug
+// that left CBSSID filtering effectively off (we were toggling ACF
+// and AMF instead).  Without correct CBSSID_DATA, the chip's HW
+// decrypt pipeline doesn't match the BSSID and never decrypts.
+static const uint32 kRCR_AAP				= (1u << 0);	// Accept all unicast
+static const uint32 kRCR_APM				= (1u << 1);	// Accept physical match
+static const uint32 kRCR_AM				= (1u << 2);	// Accept multicast
+static const uint32 kRCR_AB				= (1u << 3);	// Accept broadcast
+static const uint32 kRCR_CBSSID_DATA		= (1u << 6);	// Check BSSID match (data)
+static const uint32 kRCR_CBSSID_BCN		= (1u << 7);	// Check BSSID match (beacon)
+static const uint32 kRCR_ACRC32			= (1u << 8);	// Accept CRC32 error
+static const uint32 kRCR_AICV				= (1u << 9);	// Accept ICV error
+static const uint32 kRCR_ADF				= (1u << 11);	// Accept data frames
+static const uint32 kRCR_ACF				= (1u << 12);	// Accept ctrl frames
+static const uint32 kRCR_AMF				= (1u << 13);	// Accept mgmt frames
+static const uint32 kRCR_HTC_LOC_CTRL	= (1u << 14);	// MFC location control
+static const uint32 kRCR_APP_BA_SSN		= (1u << 27);	// Append TXBA SSN
+static const uint32 kRCR_APP_PHYST_RXFF	= (1u << 28);	// Append PHY status to RXFF
+static const uint32 kRCR_APP_ICV			= (1u << 29);	// Retain ICV after decrypt
+static const uint32 kRCR_APP_MIC			= (1u << 30);	// Retain MIC after decrypt
+static const uint32 kRCR_APPFCS			= (1u << 31);	// Append FCS to RX
+
+// Multicast Address Register — 64-bit hash filter, address 0x0620.
+// All-ones = accept all multicast addresses.  Without this, the chip
+// drops multicast frames before they reach the HW decrypt stage,
+// regardless of CAM/SECCFG state.
+static const uint16 kRegMAR					= 0x0620;
 
 // Security configuration
 static const uint16 kRegSecCfg				= 0x0680;
@@ -621,6 +638,53 @@ static const uint16 kRegCamCmd				= 0x0670;
 static const uint16 kRegCamWrite			= 0x0674;
 static const uint16 kRegCamRead				= 0x0678;
 static const uint16 kRegCamDbg				= 0x067C;
+
+// kRegCamCmd bits.  The CAM is accessed by writing kRegCamWrite with the
+// dword to install, then writing kRegCamCmd with POLLING|WRITE|addr,
+// then polling kRegCamCmd until POLLING clears (~few µs).  Address is
+// (entry_index << 3) + word_index, where word_index 0..7 covers one
+// 32-byte CAM entry: word 0 = CTL0, word 1 = CTL1, words 2..5 = key
+// bytes, words 6..7 reserved.
+static const uint32 kCamCmdPolling		= 0x80000000u;
+static const uint32 kCamCmdWrite		= 0x00010000u;
+static const uint32 kCamCmdClear		= 0x40000000u;
+
+// Bits for CAM CTL0 (word 0 of each entry).  Layout:
+//   [0..1]  KEYID — group-key id (M3's KDE) or 0 for pairwise
+//   [2..4]  ALGO — see kCamAlgo* below
+//   [15]    VALID — set last to commit the entry
+//   [16..23] MAC[0]
+//   [24..31] MAC[1]
+static const uint32 kCamValid			= 0x00008000u;
+static const uint32 kCamGroupKey		= 0x00000040u;	// BIT(6): mark CAM
+													// entry as group/multicast key
+static const uint32 kCamAlgoNone		= 0x0u;
+static const uint32 kCamAlgoWEP40		= 0x1u;
+static const uint32 kCamAlgoTKIP		= 0x2u;
+static const uint32 kCamAlgoAES			= 0x4u;	// AES-CCMP
+static const uint32 kCamAlgoWEP104		= 0x5u;
+static const uint32 kCamAlgoShift		= 2;
+
+// Bits for kRegSecCfg.  Low byte (bits 0..7) is the legacy SECCFG
+// register; bits 8..15 are the SECCFG2 / extended bits added on
+// later chips (8814au included).  Use 16-bit accesses when CHK_KEYID
+// is needed.
+//
+// TXUCKEY_DEF / RXUCKEY_DEF tell the chip to look up the unicast key
+// in CAM by peer MAC; TXBCKEY_DEF / RXBCKEY_DEF do the same for
+// broadcast (looked up by the keyid in the received CCMP IV header).
+// TXENC and RXDEC actually enable hardware crypto on the TX and RX
+// paths.  CHK_KEYID is required by morrownr's HW_VAR_SEC_CFG path
+// for 8814au-class chips — without it RX broadcast keyid lookup
+// fails and the chip silently drops AP-encrypted frames.
+static const uint16 kSecCfgTxUcKeyDef	= 0x0001;
+static const uint16 kSecCfgRxUcKeyDef	= 0x0002;
+static const uint16 kSecCfgTxEnable		= 0x0004;
+static const uint16 kSecCfgRxDecEnable	= 0x0008;
+static const uint16 kSecCfgNoSKMC		= 0x0020;	// No CAM-by-MAC search for multicast
+static const uint16 kSecCfgTxBcKeyDef	= 0x0040;
+static const uint16 kSecCfgRxBcKeyDef	= 0x0080;
+static const uint16 kSecCfgChkKeyId		= 0x0100;
 
 // Security type encoding in TX/RX descriptors
 enum SecurityType {

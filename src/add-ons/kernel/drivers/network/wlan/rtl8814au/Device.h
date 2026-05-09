@@ -256,6 +256,14 @@ private:
 	bool						fPtkValid;
 	uint64						fM1ReplayCounter;	// echoed back in M2
 
+	// Set true once _InstallSessionKeys has programmed the chip CAM
+	// and flipped kRegSecCfg.  When true, Write() marks outbound data
+	// frames as CCMP-encrypted (Protected=1, secType=AES) so the chip's
+	// hardware crypto engine encrypts the payload before TX.  Stays
+	// false during the 4-way handshake itself — EAPOL frames must go
+	// out unencrypted because the AP has no keys for us yet.
+	bool						fCcmpEnabled;
+
 	static int32				_Eapol4WayThreadEntry(void* arg);
 	void						_Eapol4WayLoop();
 	void						_HandleEapolFrame(const uint8* payload,
@@ -263,6 +271,23 @@ private:
 	void						_GenerateSnonce(uint8 nonce[32]);
 	status_t					_TxEapolDataFrame(const uint8* apMac,
 									const uint8* eapol, uint32 eapolLen);
+
+	// Security CAM programming.  After M4 we have the pairwise TK
+	// (PTK[32..47]) and the group GTK extracted from M3.  We program
+	// both into the chip's 32-entry CAM via REG_CAMCMD/REG_CAMWRITE
+	// and flip kRegSecCfg to enable hardware AES-CCMP on TX and RX.
+	// _CamWrite is the low-level "write one CAM dword" helper; it
+	// stages the data in CAMWRITE then issues CAMCMD with POLLING and
+	// waits for the chip to clear POLLING (typically ~5 µs).
+	status_t					_CamWrite(uint8 addr, uint32 data);
+	status_t					_ProgramCamEntry(uint8 entry, uint8 algo,
+									uint8 keyId, bool isGroupKey,
+									const uint8 mac[6],
+									const uint8* key, uint32 keyLen);
+	status_t					_InstallSessionKeys(const uint8* tk,
+									const uint8* gtk, uint32 gtkLen,
+									uint8 gtkKeyId,
+									const uint8 apMac[6]);
 
 	// Link state change notification
 	sem_id						fLinkStateSem;	// Provided by network stack

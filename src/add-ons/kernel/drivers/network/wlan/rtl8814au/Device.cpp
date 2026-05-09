@@ -98,6 +98,7 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	memset(fPtk, 0, sizeof(fPtk));
 	fPtkValid = false;
 	fM1ReplayCounter = 0;
+	fCcmpEnabled = false;
 	fLinkStateSem = -1;
 	fPostAssocSem = -1;
 	fPostAssocThread = -1;
@@ -794,11 +795,17 @@ RTL8814AUDevice::_InitMAC()
 	fRegisterIO->Write8(kRegAmpduMaxTime, kAmpduMaxTime);
 	fRegisterIO->Write32(kRegAmpduMaxLength, kAmpduMaxLength);
 
-	// Configure initial RX filter — accept unicast, broadcast, and
-	// management frames. We need management frames for beacons and
-	// probe responses during scanning.
+	// Configure initial RX filter — accept unicast, broadcast,
+	// multicast, data, and mgmt frames.  We deliberately leave
+	// CBSSID_DATA / CBSSID_BCN cleared at init so beacons from every
+	// BSS reach _ParseBeaconOrProbe during scan.  They get OR'd in
+	// later by _InstallSessionKeys once we associate.  ICV/MIC/PHYST
+	// retain bits stay set (chip defaults f4000000) so the HW crypto
+	// engine can stage frames through the decrypt unit.
 	uint32 rxFilter = kRCR_APM | kRCR_AM | kRCR_AB
-		| kRCR_ADF | kRCR_AMF;
+		| kRCR_ADF | kRCR_AMF
+		| kRCR_HTC_LOC_CTRL
+		| kRCR_APP_PHYST_RXFF | kRCR_APP_ICV | kRCR_APP_MIC;
 	fRegisterIO->Write32(kRegRCR, rxFilter);
 
 	// Enable DMA engines
@@ -2361,9 +2368,21 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 		return B_BUFFER_OVERFLOW;
 	}
 
-	// 802.11 header
+	// Encrypt outbound data frames once CCMP is set up.  EAPOL frames
+	// (etherType 0x888E) stay unencrypted — the only EAPOL we'd TX
+	// here is a rekey M2/M4, and those go in clear by 802.11i rule.
+	bool encryptThisFrame = device->fCcmpEnabled
+		&& etherType != 0x888E;
+	SecurityType txSecType = encryptThisFrame
+		? kSecurityAESCCMP : kSecurityNone;
+
+	// 802.11 header.  Leave Protected=0 in FC even when CCMP is active —
+	// the chip's hardware crypto engine sets the Protected bit (and
+	// inserts the 8-byte CCMP IV header) when the TX descriptor's
+	// SecType is AES.  Setting Protected here too would double-mark
+	// the frame and skip the chip's IV insertion.
 	frame[0] = 0x08;			// FC[0]: Data frame (type 2, subtype 0)
-	frame[1] = 0x01;			// FC[1]: ToDS = 1
+	frame[1] = 0x01;			// FC[1]: ToDS=1
 	frame[2] = 0;				// Duration low
 	frame[3] = 0;				// Duration high
 	memcpy(&frame[4], device->fJoinBssid, 6);	// Address1 = BSSID
@@ -2386,7 +2405,7 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 
 	status_t status = device->fTxPath->Transmit(frame,
 		32 + payloadLen, kTxQueueBE, kRateCCK1, 0,
-		kSecurityNone, isBroadcast);
+		txSecType, isBroadcast);
 
 	if (status != B_OK)
 		*numBytes = 0;
@@ -2457,6 +2476,47 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		return;
 	}
 
+	// Diag: count data frames + log details for frames *from our AP*
+	// (Addr2 = BSSID matches our fJoinBssid).  Other BSSes don't help
+	// us debug our own crypto.  Heartbeat every 64 total data frames.
+	{
+		static uint32 sDataTotal = 0;
+		static uint32 sDataProtected = 0;
+		static uint32 sDataBroadcast = 0;
+		static uint32 sFromOurAp = 0;
+		static uint32 sFromApLogged = 0;
+		uint8 fc1 = frameData[1];
+		bool prot = (fc1 & 0x40) != 0;
+		bool bcast = (frameData[4] & 0x01) != 0;	// Addr1 (RA) multicast bit
+		bool fromDS = (fc1 & 0x02) != 0;
+		// Addr2 in FromDS=1 is the BSSID; in FromDS=0 it's the source.
+		// For frames the AP sends to us (FromDS=1), Addr2 = BSSID.
+		const uint8* a2 = &frameData[10];
+		bool fromOurAp = (memcmp(a2, device->fJoinBssid, 6) == 0)
+			&& fromDS;
+		sDataTotal++;
+		if (prot) sDataProtected++;
+		if (bcast) sDataBroadcast++;
+		if (fromOurAp) sFromOurAp++;
+		if (fromOurAp && sFromApLogged < 4) {
+			sFromApLogged++;
+			dprintf(RTL8814AU_DRIVER_NAME ": RX from AP #%u fc=%02x:%02x "
+				"prot=%d bcast=%d len=%u @24:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
+				(unsigned)sFromOurAp, frameData[0], fc1,
+				prot ? 1 : 0, bcast ? 1 : 0,
+				(unsigned)frameLength,
+				frameData[24], frameData[25], frameData[26],
+				frameData[27], frameData[28], frameData[29],
+				frameData[30], frameData[31]);
+		}
+		if ((sDataTotal & 0xFF) == 0) {
+			dprintf(RTL8814AU_DRIVER_NAME ": data RX heartbeat: "
+				"total=%u protected=%u bcast=%u fromOurAp=%u\n",
+				(unsigned)sDataTotal, (unsigned)sDataProtected,
+				(unsigned)sDataBroadcast, (unsigned)sFromOurAp);
+		}
+	}
+
 	// Data frame — convert from 802.11 + LLC/SNAP to ethernet so
 	// the network stack (which sees us as Hardware type: Ethernet)
 	// can parse it.  Without this, the kernel tries to read bytes
@@ -2477,8 +2537,31 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	// Verify LLC/SNAP encapsulation; if it isn't RFC1042-style,
 	// the frame isn't IP/ARP and we'd be feeding garbage upstream.
 	const uint8* llc = frameData + k80211HeaderLen;
-	if (llc[0] != 0xAA || llc[1] != 0xAA || llc[2] != 0x03)
+	if (llc[0] != 0xAA || llc[1] != 0xAA || llc[2] != 0x03) {
+		// Diag: log first few frames that fail LLC check.  Could be
+		// CCMP frames the chip didn't decrypt (IV header at offset
+		// 24 instead of LLC), or some other unexpected layout.
+		static uint32 sLlcFailLogged = 0;
+		if (sLlcFailLogged < 6) {
+			sLlcFailLogged++;
+			dprintf(RTL8814AU_DRIVER_NAME ": RX LLC-fail #%u "
+				"fc=%02x:%02x len=%u "
+				"a3=%02x:%02x:%02x:%02x:%02x:%02x "
+				"@24:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x "
+				"@32:%02x:%02x:%02x:%02x\n",
+				(unsigned)sLlcFailLogged,
+				frameData[0], frameData[1],
+				(unsigned)frameLength,
+				frameData[16], frameData[17], frameData[18],
+				frameData[19], frameData[20], frameData[21],
+				frameData[24], frameData[25], frameData[26],
+				frameData[27], frameData[28], frameData[29],
+				frameData[30], frameData[31],
+				frameData[32], frameData[33], frameData[34],
+				frameData[35]);
+		}
 		return;
+	}
 
 	uint32 payloadLen = frameLength - k80211HeaderLen - kLLCSnapLen;
 	uint32 ethLen = 14 + payloadLen;
@@ -2716,6 +2799,30 @@ status_t
 RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 	uint32 ssidLen)
 {
+	// Reset chip security state before starting a fresh association.
+	// USB device state persists across host OS reboot, so a prior
+	// session may have left SECCFG with TX/RX-encrypt bits enabled and
+	// stale CAM entries with VALID set.  If we don't clear them, our
+	// own EAPOL M2 will get mangled by the chip's TX path (it tries
+	// to encrypt with whatever pairwise key it last had), the AP
+	// never sees a valid M2, and the handshake stalls in M1 retries.
+	// Use the full CAMCMD CLR command (invalidates all 32 entries in
+	// hardware in a single write) — per-entry CTL0=0 wasn't resetting
+	// the chip's internal "destination MAC -> CAM index" cache.  Safe
+	// here because the chip is fully initialized (firmware loaded,
+	// MAC/PHY up); doing this at _InitHardware time appeared to wedge
+	// the MAC scheduler.
+	if (fRegisterIO != NULL) {
+		(void)fRegisterIO->Write8(kRegSecCfg, 0);
+		(void)fRegisterIO->Write32(kRegCamCmd,
+			kCamCmdPolling | kCamCmdClear);
+		// Wait briefly for the clear to commit before issuing more
+		// CAM ops.  No need to poll explicitly — subsequent writes
+		// will happen well after the chip's internal latency.
+		snooze(500);
+	}
+	fCcmpEnabled = false;
+
 	// If we got stuck mid-handshake from a prior attempt that the AP
 	// ignored, allow a fresh start — we have no auth-timeout timer yet.
 	if (fJoinState == kJoinAuthenticating
@@ -3412,17 +3519,264 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			return;
 		}
 
-		// TODO next session: program PTK[32..47] (TK) + GTK into chip
-		// security CAM via REG_CAMCMD/REG_CAMWRITE, then enable CCMP
-		// in kRegSECCFG.  Until that lands, the AP will start TX'ing
-		// us encrypted data frames our chip can't decrypt and the
-		// connection will look broken at the IP layer.
+		// Program TK (PTK[32..47]) and GTK into the chip's security
+		// CAM, then flip kRegSecCfg to enable hardware AES-CCMP.  After
+		// this lands the AP's encrypted unicast + broadcast traffic
+		// decrypts on-chip and our TX path encrypts outbound data.
+		const uint8* tk = fPtk + 32;
+		status_t keyStatus = _InstallSessionKeys(tk, gtkKey, gtkLen,
+			gtkKeyId, senderMac);
+		if (keyStatus != B_OK) {
+			dprintf(RTL8814AU_DRIVER_NAME ": chip CAM install failed: "
+				"%s\n", strerror(keyStatus));
+			// Don't bail — the handshake is logically complete; data
+			// will just fail at the link layer and DHCP will time out.
+		}
+
+		if (keyStatus == B_OK)
+			fCcmpEnabled = true;
+
 		fEapolState = kEapolDone;
 		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> Done "
-			"(M4 sent; PTK + GTK extracted, chip CAM not yet "
-			"programmed)\n");
+			"(M4 sent; CCMP %s)\n",
+			fCcmpEnabled ? "enabled" : "DISABLED");
 		return;
 	}
+}
+
+
+// Low-level CAM dword write.  Stages \a data in CAMWRITE then issues a
+// CAMCMD write at \a addr (= entry_index << 3 | word_index).  Polls
+// CAMCMD until the chip clears the POLLING bit, indicating the entry
+// was committed to the security engine.  Timeout is generous — typical
+// USB control transfer round trip is ~1 ms; CAM commit is microseconds
+// chip-side, so 100 polls (~100 ms) is several orders of magnitude.
+status_t
+RTL8814AUDevice::_CamWrite(uint8 addr, uint32 data)
+{
+	if (fRegisterIO == NULL)
+		return B_NO_INIT;
+
+	status_t status = fRegisterIO->Write32(kRegCamWrite, data);
+	if (status != B_OK)
+		return status;
+	status = fRegisterIO->Write32(kRegCamCmd,
+		kCamCmdPolling | kCamCmdWrite | (uint32)addr);
+	if (status != B_OK)
+		return status;
+
+	for (uint32 i = 0; i < 100; i++) {
+		uint32 cmd = fRegisterIO->Read32(kRegCamCmd);
+		if ((cmd & kCamCmdPolling) == 0)
+			return B_OK;
+		snooze(100);
+	}
+	dprintf(RTL8814AU_DRIVER_NAME ": _CamWrite addr=0x%02x data=0x%08x "
+		"polling never cleared\n", addr, (unsigned)data);
+	return B_TIMED_OUT;
+}
+
+
+// Program one CAM entry: 8 dwords laid out as
+//   word 0 (CTL0): VALID | (algo<<2) | keyid | (mac[0]<<16) | (mac[1]<<24)
+//   word 1 (CTL1): mac[2..5]   little-endian
+//   word 2..5    : key bytes [0..15] little-endian, 4 bytes per dword
+//   word 6, 7    : reserved (zero)
+// Per the morrownr 8814au reference (hal/hal_com.c rtw_sec_write_cam_ent)
+// and rtwn (rtl8192c) — same layout across all Realtek MAC variants.
+//
+// Writes the entry from word 7 down to word 0; CTL0 is written LAST so
+// the VALID bit only goes hot once the rest of the entry is staged.
+status_t
+RTL8814AUDevice::_ProgramCamEntry(uint8 entry, uint8 algo, uint8 keyId,
+	bool isGroupKey, const uint8 mac[6], const uint8* key, uint32 keyLen)
+{
+	if (entry >= 32)
+		return B_BAD_VALUE;
+	if (keyLen > 16)
+		return B_BAD_VALUE;
+
+	uint32 base = (uint32)entry << 3;
+
+	uint8 keyBuf[16];
+	memset(keyBuf, 0, sizeof(keyBuf));
+	if (key != NULL && keyLen > 0)
+		memcpy(keyBuf, key, keyLen);
+
+	// Word 7, 6 — reserved, zero.
+	status_t status = _CamWrite(base + 7, 0);
+	if (status != B_OK)
+		return status;
+	status = _CamWrite(base + 6, 0);
+	if (status != B_OK)
+		return status;
+
+	// Words 5..2 — key bytes, little-endian, four per dword.
+	for (int j = 5; j >= 2; j--) {
+		uint32 i = (uint32)(j - 2) << 2;
+		uint32 word = (uint32)keyBuf[i]
+			| ((uint32)keyBuf[i + 1] << 8)
+			| ((uint32)keyBuf[i + 2] << 16)
+			| ((uint32)keyBuf[i + 3] << 24);
+		status = _CamWrite(base + (uint8)j, word);
+		if (status != B_OK)
+			return status;
+	}
+
+	// Word 1 — MAC[2..5].
+	uint32 ctl1 = (uint32)mac[2]
+		| ((uint32)mac[3] << 8)
+		| ((uint32)mac[4] << 16)
+		| ((uint32)mac[5] << 24);
+	status = _CamWrite(base + 1, ctl1);
+	if (status != B_OK)
+		return status;
+
+	// Word 0 — CTL0 with VALID set.  This commits the entry.  Group
+	// keys also need the BIT(6) "group key" flag — without it the
+	// chip's HW decrypt pipeline doesn't engage for incoming
+	// CCMP-encrypted broadcast frames (verified empirically against
+	// morrownr's setkey_hdl: GTK ctrl word always sets BIT(6)).
+	uint16 ctrl = (uint16)kCamValid
+		| (uint16)(((uint32)algo & 0x7u) << kCamAlgoShift)
+		| (uint16)((uint32)keyId & 0x3u);
+	if (isGroupKey)
+		ctrl |= (uint16)kCamGroupKey;
+	uint32 ctl0 = (uint32)ctrl
+		| ((uint32)mac[0] << 16)
+		| ((uint32)mac[1] << 24);
+	return _CamWrite(base + 0, ctl0);
+}
+
+
+// Install pairwise + group session keys after the 4-way handshake and
+// turn on hardware AES-CCMP via kRegSecCfg.
+//
+// Layout choice (matches rtwn's CRYPTO_FULL convention):
+//   - Group keys at CAM index = gtkKeyId (0..3)
+//   - Pairwise key at CAM index 4
+// SECCFG is configured with TX/RX UC + BC default-key lookup and TX
+// encrypt + RX decrypt enables — i.e., trust the CAM's MAC-indexed
+// key for both unicast and broadcast paths.
+status_t
+RTL8814AUDevice::_InstallSessionKeys(const uint8* tk, const uint8* gtk,
+	uint32 gtkLen, uint8 gtkKeyId, const uint8 apMac[6])
+{
+	if (fRegisterIO == NULL)
+		return B_NO_INIT;
+	if (tk == NULL || gtk == NULL || gtkLen != 16)
+		return B_BAD_VALUE;
+	if (gtkKeyId > 3)
+		return B_BAD_VALUE;
+
+	// CAM[gtkKeyId] = group key, MAC = 00:00:00:00:00:00.  The chip
+	// uses the broadcast-default-key path (kSecCfgRxBcKeyDef) to find
+	// this entry by KEYID rather than by source MAC.  The group-key
+	// CTL0 flag (BIT 6) tells the chip's decrypt engine that this is
+	// a group key — required for HW decrypt to engage on inbound
+	// CCMP-encrypted broadcast frames.
+	const uint8 zeroMac[6] = { 0, 0, 0, 0, 0, 0 };
+	status_t status = _ProgramCamEntry(gtkKeyId, kCamAlgoAES, gtkKeyId,
+		true, zeroMac, gtk, gtkLen);
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": GTK CAM[%u] write failed: %s\n",
+			gtkKeyId, strerror(status));
+		return status;
+	}
+
+	// CAM[4] = pairwise key, MAC = AP BSSID.  The chip indexes the
+	// unicast key by peer MAC for both TX (we send to AP) and RX
+	// (frames from AP).  No group flag.
+	status = _ProgramCamEntry(4, kCamAlgoAES, 0, false, apMac, tk, 16);
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": TK CAM[4] write failed: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	// Enable hardware crypto.  Match the morrownr 8814au reference's
+	// WPA2 setup (hal/hal_com.c HW_VAR_SEC_CFG + HW_VAR_SEC_DK_CFG):
+	// TX/RX enable + broadcast default-key + CHK_KEYID for proper
+	// RX broadcast keyid lookup.  Direct 16-bit write (CHK_KEYID is
+	// bit 8); don't OR with prior state — TxUseDK/RxUseDK from a
+	// stale prior session would force unicast through default-key
+	// lookup and break per-MAC pairwise matching.
+	// Match morrownr's WPA2 SECCFG exactly: TxEnable | RxDecEnable |
+	// TxBcKeyDef | RxBcKeyDef | CHK_KEYID = 0x01CC.  No NoSKMC (added
+	// during diagnosis but it doesn't help) and crucially no
+	// TxUseDK/RxUseDK (would force unicast through default-key
+	// lookup, breaking per-MAC pairwise matching).
+	uint16 oldCfg = fRegisterIO->Read16(kRegSecCfg);
+	uint16 newCfg = kSecCfgTxEnable | kSecCfgRxDecEnable
+		| kSecCfgTxBcKeyDef | kSecCfgRxBcKeyDef
+		| kSecCfgChkKeyId;
+	status = fRegisterIO->Write16(kRegSecCfg, newCfg);
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": kRegSecCfg write failed: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	dprintf(RTL8814AU_DRIVER_NAME ": CAM programmed: TK@4 (AES, peer "
+		"%02x:%02x:%02x:%02x:%02x:%02x) GTK@%u (AES, keyid=%u) "
+		"SecCfg 0x%04x->0x%04x\n",
+		apMac[0], apMac[1], apMac[2], apMac[3], apMac[4], apMac[5],
+		gtkKeyId, gtkKeyId, oldCfg, newCfg);
+
+	// Accept ALL multicast addresses by setting REG_MAR (multicast
+	// hash filter) to all-ones.  Without this, the chip drops
+	// multicast frames at MAC level before decryption — even with
+	// kRCR_AM set, the per-address hash filter still gates them.
+	// morrownr's _InitWMACSetting_8814A does this; we missed it.
+	fRegisterIO->Write32(kRegMAR + 0, 0xFFFFFFFFu);
+	fRegisterIO->Write32(kRegMAR + 4, 0xFFFFFFFFu);
+
+	// Match morrownr's 8814au post-assoc RCR (usb_halinit.c:444):
+	//   APM | AM | AB | CBSSID_DATA | CBSSID_BCN | APP_ICV |
+	//   AMF | HTC_LOC_CTRL | APP_MIC | APP_PHYST_RXFF | APPFCS
+	// The APP_ICV / APP_MIC / APP_PHYST_RXFF bits aren't actually
+	// "append after decrypt" choices — on this chip family they're
+	// required for the HW crypto engine's RX pipeline to stage
+	// frames through the decrypt unit at all.  Without them, CCMP
+	// frames bypass decrypt and arrive at the host still encrypted
+	// (verified empirically: SECCFG=0x01EC + valid CAM but RX
+	// frames at offset 24 still showed CCMP IV header).
+	uint32 oldRcr = fRegisterIO->Read32(kRegRCR);
+	uint32 newRcr = oldRcr
+		| kRCR_CBSSID_DATA | kRCR_CBSSID_BCN
+		| kRCR_APP_ICV | kRCR_APP_MIC
+		| kRCR_APP_PHYST_RXFF | kRCR_HTC_LOC_CTRL;
+	fRegisterIO->Write32(kRegRCR, newRcr);
+	dprintf(RTL8814AU_DRIVER_NAME ": RCR 0x%08x->0x%08x "
+		"(CBSSID + APP_ICV/MIC/PHYST + HTC_LOC for HW decrypt)\n",
+		(unsigned)oldRcr, (unsigned)newRcr);
+
+	// Read back CAM[1] CTL0 and CAM[4] CTL0 to confirm what the chip
+	// actually stored — useful since wrong byte-order or wrong VALID
+	// bit would cause silent decrypt failures.  CAM read is the same
+	// CMD/RWD pattern as write but without the WRITE bit.
+	for (uint8 entry = 1; entry <= 4; entry += 3) {
+		uint32 addr = (uint32)entry << 3;
+		fRegisterIO->Write32(kRegCamCmd, kCamCmdPolling | addr);
+		for (uint32 i = 0; i < 100; i++) {
+			if ((fRegisterIO->Read32(kRegCamCmd) & kCamCmdPolling) == 0)
+				break;
+			snooze(50);
+		}
+		uint32 ctl0 = fRegisterIO->Read32(kRegCamRead);
+		fRegisterIO->Write32(kRegCamCmd, kCamCmdPolling | (addr + 1));
+		for (uint32 i = 0; i < 100; i++) {
+			if ((fRegisterIO->Read32(kRegCamCmd) & kCamCmdPolling) == 0)
+				break;
+			snooze(50);
+		}
+		uint32 ctl1 = fRegisterIO->Read32(kRegCamRead);
+		dprintf(RTL8814AU_DRIVER_NAME ": CAM[%u] readback: "
+			"CTL0=0x%08x CTL1=0x%08x (expect VALID=0x8000 in CTL0 low)\n",
+			entry, (unsigned)ctl0, (unsigned)ctl1);
+	}
+
+	return B_OK;
 }
 
 
@@ -3553,8 +3907,16 @@ RTL8814AUDevice::_DoPostAssocSetup()
 		bssid[3], bssid[4], bssid[5]);
 
 	// 1. Re-write BSSID register — idempotent with _DoJoin's write.
-	for (uint32 i = 0; i < 6; i++)
-		fRegisterIO->Write8(kRegBSSID + i, bssid[i]);
+	// Use 32-bit + 16-bit writes (not byte-by-byte) so the chip sees
+	// the full BSSID atomically; some chips latch only on aligned
+	// 32-bit writes and ignore byte writes to MAC-like registers.
+	uint32 bssidLo = (uint32)bssid[0]
+		| ((uint32)bssid[1] << 8)
+		| ((uint32)bssid[2] << 16)
+		| ((uint32)bssid[3] << 24);
+	uint16 bssidHi = (uint16)bssid[4] | ((uint16)bssid[5] << 8);
+	fRegisterIO->Write32(kRegBSSID, bssidLo);
+	fRegisterIO->Write16(kRegBSSID + 4, bssidHi);
 
 	// 2. RA_INFO (H2C 0x40 = kH2C_MacIDCfg).  Field layout (from rtw88
 	//    rtw_fw_send_ra_info, payload bytes after the 1-byte cmd ID):
