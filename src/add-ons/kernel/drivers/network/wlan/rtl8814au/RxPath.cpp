@@ -188,6 +188,20 @@ RTL8814AURxPath::_ParseDescriptor(const uint8* descriptor, RxFrameInfo* info)
 	info->crcError = (dword0 & kRxDescCRC32_Err) != 0;
 	info->icvError = (dword0 & kRxDescICV_Err) != 0;
 	info->hasPhyStatus = (dword0 & kRxDescPHYStatus) != 0;
+	// SWDEC = bit 27 of dword 0.  Chip sets this when it gave up on
+	// hardware decrypt and is passing the still-encrypted payload up
+	// to the host expecting software decrypt.
+	info->swDecNeeded = (dword0 & (1u << 27)) != 0;
+
+	// Chip appends a 4-byte 802.11 FCS after the frame body when
+	// RCR_APPFCS is set (chip default).  Morrownr's RX path strips
+	// it (`pattrib->pkt_len -= IEEE80211_FCS_LEN`); we do the same so
+	// downstream consumers — including SW CCMP decrypt, which needs
+	// the MIC at exactly `packetLength - 8` — see the right end of
+	// the frame.  The FCS bytes are still present in the buffer past
+	// `packetLength`, just unused.
+	if (info->packetLength >= 4)
+		info->packetLength -= 4;
 
 	// DWORD 1
 	info->macID = (uint8)((dword1 & kRxDescMACID_Mask)

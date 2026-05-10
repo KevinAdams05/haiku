@@ -264,6 +264,16 @@ private:
 	// out unencrypted because the AP has no keys for us yet.
 	bool						fCcmpEnabled;
 
+	// Stash of the GTK (group temporal key) extracted from M3.  The
+	// chip's HW decrypt engine declines to decrypt incoming CCMP
+	// broadcasts (signaled via the SWDEC bit in the RX descriptor —
+	// chip is asking us to do SW decrypt) so we keep the key around
+	// to decrypt those frames in software in _RxFrameReceived.
+	// Pairwise key for unicast SW decrypt = fPtk[32..47] (TK).
+	uint8						fGtk[16];
+	uint8						fGtkKeyId;
+	bool						fGtkValid;
+
 	static int32				_Eapol4WayThreadEntry(void* arg);
 	void						_Eapol4WayLoop();
 	void						_HandleEapolFrame(const uint8* payload,

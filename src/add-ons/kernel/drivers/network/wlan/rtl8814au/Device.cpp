@@ -99,6 +99,9 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fPtkValid = false;
 	fM1ReplayCounter = 0;
 	fCcmpEnabled = false;
+	memset(fGtk, 0, sizeof(fGtk));
+	fGtkKeyId = 0;
+	fGtkValid = false;
 	fLinkStateSem = -1;
 	fPostAssocSem = -1;
 	fPostAssocThread = -1;
@@ -2498,12 +2501,15 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		if (prot) sDataProtected++;
 		if (bcast) sDataBroadcast++;
 		if (fromOurAp) sFromOurAp++;
-		if (fromOurAp && sFromApLogged < 4) {
+		if (fromOurAp && sFromApLogged < 16) {
 			sFromApLogged++;
 			dprintf(RTL8814AU_DRIVER_NAME ": RX from AP #%u fc=%02x:%02x "
-				"prot=%d bcast=%d len=%u @24:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
+				"prot=%d bcast=%d swdec=%d icverr=%d len=%u "
+				"@24:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
 				(unsigned)sFromOurAp, frameData[0], fc1,
 				prot ? 1 : 0, bcast ? 1 : 0,
+				info != NULL && info->swDecNeeded ? 1 : 0,
+				info != NULL && info->icvError ? 1 : 0,
 				(unsigned)frameLength,
 				frameData[24], frameData[25], frameData[26],
 				frameData[27], frameData[28], frameData[29],
@@ -2534,6 +2540,70 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	if (frameLength < k80211HeaderLen + kLLCSnapLen)
 		return;
 
+	// SW CCMP decrypt fallback.  The chip's HW crypto engine refuses
+	// to decrypt CCMP frames in our setup (signaled via the SWDEC bit
+	// in the RX descriptor) — every CAM bit and SECCFG bit is right
+	// per morrownr's reference but the engine still bails.  When it
+	// hands us an encrypted frame, decrypt in software using the keys
+	// we derived during the 4-way handshake.
+	//
+	// Decrypted output goes into `decryptBuf`, and we re-point
+	// `frameData` / `frameLength` at the (shorter, plaintext) frame.
+	// If decrypt fails we just drop the frame here.
+	uint8 decryptBuf[2400];
+	if ((frameData[1] & 0x40) != 0 && device->fCcmpEnabled) {
+		if (frameLength > sizeof(decryptBuf))
+			return;
+		if (frameLength < k80211HeaderLen + 8 + 8)
+			return;
+		memcpy(decryptBuf, frameData, frameLength);
+
+		bool isBcast = (decryptBuf[4] & 0x01) != 0;
+		const uint8* key;
+		if (isBcast) {
+			if (!device->fGtkValid)
+				return;
+			key = device->fGtk;
+		} else {
+			if (!device->fPtkValid)
+				return;
+			key = device->fPtk + 32;	// TK = PTK[32..47]
+		}
+
+		if (!wpa2_crypto::ccmp_decrypt(key, decryptBuf, frameLength,
+				k80211HeaderLen)) {
+			static uint32 sCcmpFails = 0;
+			if (++sCcmpFails <= 4) {
+				dprintf(RTL8814AU_DRIVER_NAME ": SW CCMP decrypt "
+					"failed (#%u, len=%u, bcast=%d)\n",
+					(unsigned)sCcmpFails, (unsigned)frameLength,
+					isBcast ? 1 : 0);
+			}
+			return;
+		}
+
+		// Strip the 8-byte CCMP IV header by collapsing it: shift
+		// plaintext (now sitting at [hdr+8 .. frameLen-9]) up over
+		// the IV.  Trim the trailing 8-byte MIC by reducing length.
+		uint32 payloadStart = k80211HeaderLen + 8;
+		uint32 payloadLen = frameLength - payloadStart - 8;
+		memmove(decryptBuf + k80211HeaderLen,
+			decryptBuf + payloadStart, payloadLen);
+		decryptBuf[1] &= ~0x40;		// clear Protected bit
+		frameData = decryptBuf;
+		frameLength = k80211HeaderLen + payloadLen;
+
+		static uint32 sCcmpOk = 0;
+		if (++sCcmpOk <= 4) {
+			dprintf(RTL8814AU_DRIVER_NAME ": SW CCMP decrypt OK "
+				"#%u len=%u bcast=%d ethertype=%02x:%02x\n",
+				(unsigned)sCcmpOk, (unsigned)frameLength,
+				isBcast ? 1 : 0,
+				frameData[k80211HeaderLen + 6],
+				frameData[k80211HeaderLen + 7]);
+		}
+	}
+
 	// Verify LLC/SNAP encapsulation; if it isn't RFC1042-style,
 	// the frame isn't IP/ARP and we'd be feeding garbage upstream.
 	const uint8* llc = frameData + k80211HeaderLen;
@@ -2545,12 +2615,14 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		if (sLlcFailLogged < 6) {
 			sLlcFailLogged++;
 			dprintf(RTL8814AU_DRIVER_NAME ": RX LLC-fail #%u "
-				"fc=%02x:%02x len=%u "
+				"fc=%02x:%02x swdec=%d icverr=%d len=%u "
 				"a3=%02x:%02x:%02x:%02x:%02x:%02x "
 				"@24:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x "
 				"@32:%02x:%02x:%02x:%02x\n",
 				(unsigned)sLlcFailLogged,
 				frameData[0], frameData[1],
+				info != NULL && info->swDecNeeded ? 1 : 0,
+				info != NULL && info->icvError ? 1 : 0,
 				(unsigned)frameLength,
 				frameData[16], frameData[17], frameData[18],
 				frameData[19], frameData[20], frameData[21],
@@ -3533,8 +3605,14 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			// will just fail at the link layer and DHCP will time out.
 		}
 
-		if (keyStatus == B_OK)
+		if (keyStatus == B_OK) {
 			fCcmpEnabled = true;
+			// Stash GTK for SW decrypt fallback (chip is unable to HW
+			// decrypt these frames — see _RxFrameReceived).
+			memcpy(fGtk, gtkKey, gtkLen > 16 ? 16 : gtkLen);
+			fGtkKeyId = gtkKeyId;
+			fGtkValid = true;
+		}
 
 		fEapolState = kEapolDone;
 		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> Done "
@@ -3701,13 +3779,17 @@ RTL8814AUDevice::_InstallSessionKeys(const uint8* tk, const uint8* gtk,
 	// bit 8); don't OR with prior state — TxUseDK/RxUseDK from a
 	// stale prior session would force unicast through default-key
 	// lookup and break per-MAC pairwise matching.
-	// Match morrownr's WPA2 SECCFG exactly: TxEnable | RxDecEnable |
-	// TxBcKeyDef | RxBcKeyDef | CHK_KEYID = 0x01CC.  No NoSKMC (added
-	// during diagnosis but it doesn't help) and crucially no
-	// TxUseDK/RxUseDK (would force unicast through default-key
-	// lookup, breaking per-MAC pairwise matching).
+	// SW CCMP fallback: leave HW RX decrypt OFF (clear RxDecEnable)
+	// because the chip's decrypt engine silently drops CCMP frames
+	// it can't process in our setup — even with the matching keys
+	// programmed in CAM the SWDEC bit signaled that HW decrypt was
+	// declined.  With RxDecEnable=0 the chip passes Protected frames
+	// up untouched and we SW-decrypt in _RxFrameReceived using
+	// wpa2_crypto::ccmp_decrypt.  TxEnable stays on so the chip's
+	// HW encrypt engine still encrypts our outbound CCMP frames
+	// using the CAM entries we programmed.
 	uint16 oldCfg = fRegisterIO->Read16(kRegSecCfg);
-	uint16 newCfg = kSecCfgTxEnable | kSecCfgRxDecEnable
+	uint16 newCfg = kSecCfgTxEnable
 		| kSecCfgTxBcKeyDef | kSecCfgRxBcKeyDef
 		| kSecCfgChkKeyId;
 	status = fRegisterIO->Write16(kRegSecCfg, newCfg);

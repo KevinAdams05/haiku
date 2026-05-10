@@ -64,6 +64,35 @@ void pbkdf2_hmac_sha1(const uint8* password, uint32 passwordLen,
 bool aes_unwrap(const uint8 kek[16], const uint8* cipher, uint32 cipherLen,
 	uint8* plaintext);
 
+
+// AES-CCMP frame decrypt for IEEE 802.11i (CCM with M=8, L=2).
+//
+// Used when the chip's hardware crypto engine declines to decrypt a
+// CCMP frame (signaled via the SWDEC bit in the RX descriptor) — we
+// fall back to in-driver software decrypt so DHCP / IP traffic on a
+// WPA2-PSK link still works.
+//
+// Input frame layout (in-place):
+//   [0..hdrLen-1]                802.11 header
+//   [hdrLen..hdrLen+7]           CCMP IV header (PN0|PN1|0|KeyIDByte|PN2..PN5)
+//   [hdrLen+8..frameLen-9]       encrypted body
+//   [frameLen-8..frameLen-1]     8-byte MIC
+//
+// On success: encrypted body is replaced with plaintext in place,
+// MIC verifies, returns `true`.  Caller is then responsible for
+// stripping the 8-byte CCMP IV header (memmove plaintext over IV)
+// and trimming the 8-byte MIC, and clearing FC[1] bit 6 (Protected).
+//
+// On any failure (bad length, MIC mismatch): returns `false`; the
+// frame buffer's contents are unspecified (partial decrypt
+// possible) and the caller must drop the frame.
+//
+// hdrLen: 24 for non-QoS data frames, 26 for QoS data.  We do not
+// support 4-address frames (Addr4 present) here — those are AP/WDS
+// scenarios that don't apply to a STA-mode driver.
+bool ccmp_decrypt(const uint8 tk[16], uint8* frame, uint32 frameLen,
+	uint32 hdrLen);
+
 }	// namespace wpa2_crypto
 
 

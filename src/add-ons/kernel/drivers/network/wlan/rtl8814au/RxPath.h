@@ -56,6 +56,12 @@ struct RxFrameInfo {
 	bool		crcError;			// true if CRC32 check failed
 	bool		icvError;			// true if ICV check failed
 	bool		hasPhyStatus;		// true if PHY status block is present
+	bool		swDecNeeded;		// SWDEC bit (RX desc dword 0 bit 27):
+									// chip says "I couldn't HW-decrypt
+									// this; please software-decrypt".
+									// When set on a Protected frame,
+									// it means our CAM/SECCFG didn't
+									// match what the chip expected.
 };
 
 // Callback type for frame delivery. The RX path calls this for each
