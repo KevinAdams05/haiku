@@ -274,6 +274,15 @@ private:
 	uint8						fGtkKeyId;
 	bool						fGtkValid;
 
+	// TX-side packet number counters for SW CCMP encrypt.  IEEE 802.11i
+	// requires a strictly-monotonic PN per (key, peer) pair so the AP
+	// can replay-detect; we maintain a separate counter for unicast
+	// (pairwise key TK) and multicast (group key GTK) TX.  Both start
+	// at 1 — PN=0 is reserved.  Width is uint64 because the on-air PN
+	// is 48 bits; the upper 16 bits are unused.
+	uint64						fTxPnPairwise;
+	uint64						fTxPnGroup;
+
 	static int32				_Eapol4WayThreadEntry(void* arg);
 	void						_Eapol4WayLoop();
 	void						_HandleEapolFrame(const uint8* payload,

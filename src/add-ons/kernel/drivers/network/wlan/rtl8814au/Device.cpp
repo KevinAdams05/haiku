@@ -102,6 +102,8 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	memset(fGtk, 0, sizeof(fGtk));
 	fGtkKeyId = 0;
 	fGtkValid = false;
+	fTxPnPairwise = 1;
+	fTxPnGroup = 1;
 	fLinkStateSem = -1;
 	fPostAssocSem = -1;
 	fPostAssocThread = -1;
@@ -2374,16 +2376,17 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 	// Encrypt outbound data frames once CCMP is set up.  EAPOL frames
 	// (etherType 0x888E) stay unencrypted — the only EAPOL we'd TX
 	// here is a rekey M2/M4, and those go in clear by 802.11i rule.
+	//
+	// We do CCMP encryption *in software* (wpa2_crypto::ccmp_encrypt)
+	// because the chip's HW encrypt engine fails the same way HW
+	// decrypt does — outbound CCMP frames go on-air either unencrypted
+	// or garbled, and the AP drops them.  TX descriptor's SecType is
+	// kSecurityNone so the chip just transmits whatever we hand it.
 	bool encryptThisFrame = device->fCcmpEnabled
 		&& etherType != 0x888E;
-	SecurityType txSecType = encryptThisFrame
-		? kSecurityAESCCMP : kSecurityNone;
 
-	// 802.11 header.  Leave Protected=0 in FC even when CCMP is active —
-	// the chip's hardware crypto engine sets the Protected bit (and
-	// inserts the 8-byte CCMP IV header) when the TX descriptor's
-	// SecType is AES.  Setting Protected here too would double-mark
-	// the frame and skip the chip's IV insertion.
+	// 802.11 header.  Protected bit gets set by ccmp_encrypt below
+	// after the body is encrypted; for plaintext frames we leave it 0.
 	frame[0] = 0x08;			// FC[0]: Data frame (type 2, subtype 0)
 	frame[1] = 0x01;			// FC[1]: ToDS=1
 	frame[2] = 0;				// Duration low
@@ -2405,10 +2408,74 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 	frame[31] = (uint8)(etherType & 0xFF);
 
 	memcpy(&frame[32], payload, payloadLen);
+	uint32 txFrameLen = 32 + payloadLen;
+
+	// SW CCMP encrypt: replace the plaintext body with CCMP IV +
+	// encrypted body + MIC, set the Protected bit.  Frame buffer
+	// already has plenty of headroom (sizeof(frame) - 32 > payloadLen
+	// + 16) so the in-place expansion fits.
+	if (encryptThisFrame) {
+		static uint32 sTxEnter = 0;
+		if (++sTxEnter <= 6) {
+			dprintf(RTL8814AU_DRIVER_NAME ": TX encrypt entry #%u "
+				"ethertype=%04x bcast=%d gtkValid=%d ptkValid=%d "
+				"ccmpEnabled=%d txFrameLen=%u\n",
+				(unsigned)sTxEnter, etherType, isBroadcast ? 1 : 0,
+				device->fGtkValid ? 1 : 0,
+				device->fPtkValid ? 1 : 0,
+				device->fCcmpEnabled ? 1 : 0,
+				(unsigned)txFrameLen);
+		}
+
+		if (txFrameLen + 16 > sizeof(frame)) {
+			dprintf(RTL8814AU_DRIVER_NAME ": TX encrypt: buffer overflow\n");
+			*numBytes = 0;
+			return B_BUFFER_OVERFLOW;
+		}
+		// Per IEEE 802.11i, a STA always uses the *pairwise* key for
+		// its own outbound TX, even when the logical destination
+		// (Addr3) is broadcast/multicast.  The frame is sent unicast
+		// at the link layer (Addr1 = BSSID) so only the AP needs to
+		// decrypt it, and it does so with the pairwise key.  The AP
+		// then re-broadcasts using the group key.  Using GTK here
+		// would make the AP fail decrypt and silently drop the
+		// frame — exactly the symptom we were seeing with DHCP.
+		if (!device->fPtkValid) {
+			dprintf(RTL8814AU_DRIVER_NAME ": TX encrypt: no PTK\n");
+			*numBytes = 0;
+			return B_DEV_NOT_READY;
+		}
+		const uint8* key = device->fPtk + 32;	// TK = PTK[32..47]
+		uint64 pn = device->fTxPnPairwise++;
+		uint8 keyId = 0;
+		// hdrLen = 24 (802.11 header only).  LLC/SNAP at offset 24..31
+		// is part of the body that gets encrypted along with the IP
+		// payload — passing 32 here would skip past the LLC and
+		// ccmp_encrypt would treat it as if there were no body to
+		// encrypt past offset 32, plus fail the 24/26 hdrLen check.
+		uint32 newLen = wpa2_crypto::ccmp_encrypt(key, frame, txFrameLen,
+			24, pn, keyId);
+		if (newLen == 0) {
+			dprintf(RTL8814AU_DRIVER_NAME ": TX encrypt: ccmp_encrypt "
+				"returned 0 (bad hdrLen?)\n");
+			*numBytes = 0;
+			return B_ERROR;
+		}
+		txFrameLen = newLen;
+
+		static uint32 sCcmpEncOk = 0;
+		if (++sCcmpEncOk <= 4) {
+			dprintf(RTL8814AU_DRIVER_NAME ": SW CCMP encrypt OK #%u "
+				"len=%u bcast=%d ethertype=%04x pn=%llu\n",
+				(unsigned)sCcmpEncOk, (unsigned)txFrameLen,
+				isBroadcast ? 1 : 0, etherType,
+				(unsigned long long)pn);
+		}
+	}
 
 	status_t status = device->fTxPath->Transmit(frame,
-		32 + payloadLen, kTxQueueBE, kRateCCK1, 0,
-		txSecType, isBroadcast);
+		txFrameLen, kTxQueueBE, kRateCCK1, 0,
+		kSecurityNone, isBroadcast);
 
 	if (status != B_OK)
 		*numBytes = 0;
@@ -3612,6 +3679,11 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			memcpy(fGtk, gtkKey, gtkLen > 16 ? 16 : gtkLen);
 			fGtkKeyId = gtkKeyId;
 			fGtkValid = true;
+			// Reset TX PN counters with fresh keys.  IEEE 802.11i
+			// disallows reusing a PN with a given key, so we start
+			// at 1 every time keys are reinstalled.
+			fTxPnPairwise = 1;
+			fTxPnGroup = 1;
 		}
 
 		fEapolState = kEapolDone;
@@ -3779,19 +3851,17 @@ RTL8814AUDevice::_InstallSessionKeys(const uint8* tk, const uint8* gtk,
 	// bit 8); don't OR with prior state — TxUseDK/RxUseDK from a
 	// stale prior session would force unicast through default-key
 	// lookup and break per-MAC pairwise matching.
-	// SW CCMP fallback: leave HW RX decrypt OFF (clear RxDecEnable)
-	// because the chip's decrypt engine silently drops CCMP frames
-	// it can't process in our setup — even with the matching keys
-	// programmed in CAM the SWDEC bit signaled that HW decrypt was
-	// declined.  With RxDecEnable=0 the chip passes Protected frames
-	// up untouched and we SW-decrypt in _RxFrameReceived using
-	// wpa2_crypto::ccmp_decrypt.  TxEnable stays on so the chip's
-	// HW encrypt engine still encrypts our outbound CCMP frames
-	// using the CAM entries we programmed.
+	// SW CCMP for both directions: chip's HW crypto engine doesn't
+	// engage for our setup (RxDecEnable silently dropped Protected
+	// frames; HW encrypt produced ciphertext the AP couldn't decrypt
+	// either, hence DHCP_DISCOVER going unanswered).  Disable all
+	// chip-side crypto by writing SECCFG=0 and do AES-CCMP entirely
+	// in software via wpa2_crypto::ccmp_encrypt / ccmp_decrypt.  CAM
+	// entries are still written above (harmless when SECCFG=0) so
+	// that if the chip's HW crypto suddenly cooperates in some
+	// future test we won't have to re-derive them.
 	uint16 oldCfg = fRegisterIO->Read16(kRegSecCfg);
-	uint16 newCfg = kSecCfgTxEnable
-		| kSecCfgTxBcKeyDef | kSecCfgRxBcKeyDef
-		| kSecCfgChkKeyId;
+	uint16 newCfg = 0;
 	status = fRegisterIO->Write16(kRegSecCfg, newCfg);
 	if (status != B_OK) {
 		dprintf(RTL8814AU_DRIVER_NAME ": kRegSecCfg write failed: %s\n",

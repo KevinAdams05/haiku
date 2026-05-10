@@ -695,4 +695,169 @@ ccmp_decrypt(const uint8 tk[16], uint8* frame, uint32 frameLen, uint32 hdrLen)
 }
 
 
+// AES-CCMP encrypt per IEEE 802.11-2012 §11.4.4.4.  Mirror of
+// ccmp_decrypt: build the same CCM B_0 / nonce / AAD, run AES-CBC-MAC
+// over (B_0 || AAD-len-prefix || AAD || pad || plaintext || pad) to
+// produce a 16-byte tag; first 8 bytes XOR S_0 = encrypted MIC tag.
+// Then AES-CTR (counter starts at 1) encrypts the body in place.
+// Finally rewrites the buffer with the CCMP IV header at [hdrLen..+7]
+// and sets the Protected bit in FC[1].
+uint32
+ccmp_encrypt(const uint8 tk[16], uint8* frame, uint32 frameLen, uint32 hdrLen,
+	uint64 pn, uint8 keyId)
+{
+	if (hdrLen != 24 && hdrLen != 26)
+		return 0;	// Addr4 / unsupported
+
+	uint32 bodyLen = frameLen - hdrLen;
+
+	// Make room for the 8-byte CCMP IV by shifting the body 8 bytes
+	// later in the buffer.  Caller guarantees frameLen+16 capacity.
+	memmove(frame + hdrLen + 8, frame + hdrLen, bodyLen);
+	uint8* body = frame + hdrLen + 8;
+	uint8* iv = frame + hdrLen;
+
+	// Set the Protected Frame bit in FC[1] *before* building AAD.
+	// IEEE 802.11i specifies the AAD computation uses the modified
+	// MAC header where Protected Frame is set to 1 (the frame is
+	// protected, after all).  Both sender and receiver compute the
+	// MIC over this byte; if we leave it 0 here, our MIC won't match
+	// what the AP computes when it receives the frame and the AP
+	// silently drops the frame.
+	frame[1] |= 0x40;
+
+	// Build the CCMP IV header.
+	//   IV[0]=PN0, IV[1]=PN1, IV[2]=0 (reserved), IV[3]=KeyID byte,
+	//   IV[4]=PN2, IV[5]=PN3, IV[6]=PN4, IV[7]=PN5.
+	// KeyID byte: bit 5 = ExtIV (always 1 for CCMP), bits 6..7 = keyId.
+	iv[0] = (uint8)(pn & 0xFF);				// PN0
+	iv[1] = (uint8)((pn >> 8) & 0xFF);		// PN1
+	iv[2] = 0;
+	iv[3] = (uint8)(0x20 | ((keyId & 0x03) << 6));
+	iv[4] = (uint8)((pn >> 16) & 0xFF);		// PN2
+	iv[5] = (uint8)((pn >> 24) & 0xFF);		// PN3
+	iv[6] = (uint8)((pn >> 32) & 0xFF);		// PN4
+	iv[7] = (uint8)((pn >> 40) & 0xFF);		// PN5
+
+	// Nonce (13 bytes): same construction as in decrypt — priority
+	// byte (0 for non-QoS data), then A2 (transmitter address; for
+	// our STA-side TX with ToDS=1 this is our own MAC at offset 10
+	// of the 802.11 header), then PN big-endian (PN5 first).
+	uint8 nonce[13];
+	uint8 priorityByte = 0;
+	if (hdrLen == 26)
+		priorityByte = frame[24] & 0x0F;
+	nonce[0] = priorityByte;
+	memcpy(&nonce[1], frame + 10, 6);
+	nonce[7] = (uint8)((pn >> 40) & 0xFF);	// PN5
+	nonce[8] = (uint8)((pn >> 32) & 0xFF);	// PN4
+	nonce[9] = (uint8)((pn >> 24) & 0xFF);	// PN3
+	nonce[10] = (uint8)((pn >> 16) & 0xFF);	// PN2
+	nonce[11] = (uint8)((pn >> 8) & 0xFF);	// PN1
+	nonce[12] = (uint8)(pn & 0xFF);			// PN0
+
+	// AAD (same as decrypt path).
+	uint8 aad[32];
+	memset(aad, 0, sizeof(aad));
+	uint32 aadLen;
+	aad[0] = (uint8)(frame[0] & 0x8Fu);
+	aad[1] = (uint8)(frame[1] & 0xC7u);
+	memcpy(&aad[2], frame + 4, 6);
+	memcpy(&aad[8], frame + 10, 6);
+	memcpy(&aad[14], frame + 16, 6);
+	aad[20] = (uint8)(frame[22] & 0x0Fu);
+	aad[21] = 0;
+	if (hdrLen == 26) {
+		aad[22] = (uint8)(frame[24] & 0x0Fu);
+		aad[23] = 0;
+		aadLen = 24;
+	} else {
+		aadLen = 22;
+	}
+
+	// CBC-MAC chain: B_0 || AAD-len-prefix(2) || AAD || pad || body || pad.
+	uint8 b0[16];
+	b0[0] = 0x59;
+	memcpy(&b0[1], nonce, 13);
+	b0[14] = (uint8)(bodyLen >> 8);
+	b0[15] = (uint8)bodyLen;
+
+	uint8 macState[16];
+	aes128_encrypt(tk, b0, macState);
+
+	uint8 macBlock[16];
+	memset(macBlock, 0, sizeof(macBlock));
+	macBlock[0] = (uint8)(aadLen >> 8);
+	macBlock[1] = (uint8)aadLen;
+	uint32 firstChunk = (aadLen <= 14) ? aadLen : 14;
+	memcpy(&macBlock[2], aad, firstChunk);
+	for (uint32 i = 0; i < 16; i++)
+		macBlock[i] ^= macState[i];
+	aes128_encrypt(tk, macBlock, macState);
+	if (aadLen > 14) {
+		memset(macBlock, 0, sizeof(macBlock));
+		memcpy(macBlock, aad + 14, aadLen - 14);
+		for (uint32 i = 0; i < 16; i++)
+			macBlock[i] ^= macState[i];
+		aes128_encrypt(tk, macBlock, macState);
+	}
+
+	// Fold plaintext into CBC-MAC, then CTR-encrypt the body.  The
+	// loop processes one 16-byte block per iteration: first XOR the
+	// plaintext block into macState and run AES on it, then run AES
+	// on the CTR block to produce keystream and XOR with the body to
+	// encrypt in place.  Counter starts at 1; counter 0 is reserved
+	// for masking the MIC tag.
+	uint8 ctrBlock[16];
+	ctrBlock[0] = 0x01;
+	memcpy(&ctrBlock[1], nonce, 13);
+
+	uint32 offset = 0;
+	uint32 counter = 1;
+	while (offset < bodyLen) {
+		uint32 chunk = bodyLen - offset;
+		if (chunk > 16)
+			chunk = 16;
+
+		// Fold plaintext into CBC-MAC (must happen *before* CTR
+		// overwrites the body).
+		memset(macBlock, 0, sizeof(macBlock));
+		memcpy(macBlock, body + offset, chunk);
+		for (uint32 i = 0; i < 16; i++)
+			macBlock[i] ^= macState[i];
+		aes128_encrypt(tk, macBlock, macState);
+
+		// CTR-encrypt this block of body in place.
+		ctrBlock[14] = (uint8)(counter >> 8);
+		ctrBlock[15] = (uint8)counter;
+		uint8 keystream[16];
+		aes128_encrypt(tk, ctrBlock, keystream);
+		for (uint32 i = 0; i < chunk; i++)
+			body[offset + i] ^= keystream[i];
+
+		offset += chunk;
+		counter++;
+	}
+
+	// Encrypted MIC tag = (CBC-MAC[0..7] XOR S_0[0..7]) where
+	// S_0 = AES(K, A_0) with counter=0.
+	uint8 a0[16];
+	a0[0] = 0x01;
+	memcpy(&a0[1], nonce, 13);
+	a0[14] = 0;
+	a0[15] = 0;
+	uint8 s0[16];
+	aes128_encrypt(tk, a0, s0);
+
+	uint8* mic = body + bodyLen;
+	for (uint32 i = 0; i < 8; i++)
+		mic[i] = macState[i] ^ s0[i];
+
+	// Protected bit was already set up-front so it would be folded
+	// into the AAD; nothing more to do here.
+
+	return frameLen + 16;
+}
+
+
 }	// namespace wpa2_crypto

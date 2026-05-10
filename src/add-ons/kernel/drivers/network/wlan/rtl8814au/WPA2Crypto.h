@@ -93,6 +93,35 @@ bool aes_unwrap(const uint8 kek[16], const uint8* cipher, uint32 cipherLen,
 bool ccmp_decrypt(const uint8 tk[16], uint8* frame, uint32 frameLen,
 	uint32 hdrLen);
 
+
+// AES-CCMP frame encrypt for IEEE 802.11i (CCM with M=8, L=2).
+//
+// Mirror of ccmp_decrypt.  Used when the chip's HW encrypt engine
+// also fails to encrypt our outbound CCMP frames (same chip-state
+// issue as RX) and we have to do it in software before submitting
+// the frame on the data path.
+//
+// Input frame layout (in-place; buffer must have at least
+// frameLen+16 bytes of capacity for the IV+MIC expansion):
+//   [0..hdrLen-1]                802.11 header (FC[1] Protected=0)
+//   [hdrLen..frameLen-1]         plaintext body (LLC + payload)
+//
+// On return (success): frame is rewritten in place to:
+//   [0..hdrLen-1]                802.11 header (Protected bit set)
+//   [hdrLen..hdrLen+7]           CCMP IV header (PN encoded + KeyID byte)
+//   [hdrLen+8..frameLen+7]       encrypted body
+//   [frameLen+8..frameLen+15]    8-byte encrypted MIC
+// Returns the new frame length (= frameLen + 16) on success, 0 on
+// failure (only failure mode is bad header length).
+//
+// pn is a 48-bit packet number that must increase monotonically per
+// (key, peer) pair — caller is responsible for maintaining the
+// counter and incrementing before each call.
+//
+// keyId is the CCMP key id (0 for pairwise, 1..3 for group).
+uint32 ccmp_encrypt(const uint8 tk[16], uint8* frame, uint32 frameLen,
+	uint32 hdrLen, uint64 pn, uint8 keyId);
+
 }	// namespace wpa2_crypto
 
 
