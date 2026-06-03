@@ -290,10 +290,19 @@ get_cpu_model_string(enum cpu_platform platform, enum cpu_vendor cpuVendor,
 			if (model <= 8 || model == 0xa)
 				return "Athlon XP";
 		} else if (family == 0xf) {
+			if (model == 0x43) {
+				get_cpuid_model_string(cpuidName);
+				if (strcasestr(cpuidName, "Opteron") != NULL)
+					return "Opteron";
+				if (strcasestr(cpuidName, "FX") != NULL)
+					return "Athlon 64 FX";
+				return "Athlon 64";
+			}
 			if (model <= 4 || model == 7 || model == 8
 				|| (model >= 0xb && model <= 0xf) || model == 0x14
 				|| model == 0x18 || model == 0x1b || model == 0x1f
 				|| model == 0x23 || model == 0x2b
+				|| model == 0x4b || model == 0x6b
 				|| ((model & 0xf) == 0xf && model >= 0x2f && model <= 0x7e)) {
 				return "Athlon 64";
 			}
